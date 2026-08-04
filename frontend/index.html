@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="es-AR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Radar Laboral</title>
+    <link rel="stylesheet" href="/static/styles.css?v=14" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Agente de investigaci&oacute;n laboral</p>
+          <h1>Radar Laboral</h1>
+        </div>
+        <div class="status-pill" id="connectionStatus">Listo</div>
+      </header>
+
+      <main class="workspace">
+        <section class="query-panel" aria-labelledby="researchTitle">
+          <div class="panel-heading">
+            <h2 id="researchTitle">Investigar empresa</h2>
+          </div>
+
+          <form id="researchForm" class="research-form">
+            <div class="form-block">
+              <label>
+                Empresa
+                <input
+                  id="companyName"
+                  name="companyName"
+                  type="text"
+                  autocomplete="organization"
+                  placeholder="Ej: Mercado Libre"
+                  required
+                />
+              </label>
+            </div>
+
+            <div class="form-block">
+              <div class="block-heading">
+                <h3>CV opcional</h3>
+                <p>Sub&iacute; un archivo o peg&aacute; el texto para personalizar la preparaci&oacute;n.</p>
+              </div>
+              <input class="sr-only" id="cvFile" name="cvFile" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+              <label class="upload-control" for="cvFile">
+                <span class="upload-action">Subir CV</span>
+                <span class="upload-copy">
+                  <strong id="cvFileName">PDF o DOCX</strong>
+                  <small id="cvFileStatus">Ning&uacute;n archivo seleccionado.</small>
+                </span>
+              </label>
+              <label>
+                Texto del CV
+                <textarea
+                  id="cvText"
+                  name="cvText"
+                  rows="8"
+                  placeholder="Pega tu CV si quer&eacute;s preparaci&oacute;n personalizada."
+                ></textarea>
+              </label>
+              <span class="field-note">El CV original no se modifica. Solo se usan se&ntilde;ales para preparar recomendaciones.</span>
+            </div>
+
+            <div class="form-block">
+              <div class="block-heading">
+                <h3>Opciones</h3>
+              </div>
+              <div class="toggles" aria-label="Opciones de CV">
+                <label class="toggle-row">
+                  <input id="includeTailoring" type="checkbox" />
+                  <span>Adaptar recomendaciones al CV</span>
+                </label>
+                <label class="toggle-row">
+                  <input id="includeDraft" type="checkbox" />
+                  <span>Generar borrador de CV adaptado</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="primary-button" type="submit">Generar informe</button>
+              <button class="secondary-button" type="button" id="clearButton">Borrar formulario</button>
+            </div>
+          </form>
+        </section>
+
+        <div class="report-stack">
+          <section class="report-panel" aria-live="polite">
+            <div id="emptyState" class="empty-state">
+              <div class="radar-mark" aria-hidden="true"></div>
+              <h2>Busca una empresa para empezar</h2>
+              <p>El informe separa hechos, inferencias y advertencias para preparar una postulaci&oacute;n con mejor contexto.</p>
+            </div>
+
+            <div id="loadingState" class="loading-state hidden">
+              <div class="scanline" aria-hidden="true"></div>
+              <h2>Generando informe</h2>
+              <p id="loadingMessage">La investigaci&oacute;n est&aacute; pendiente.</p>
+            </div>
+
+            <div id="errorState" class="error-state hidden">
+              <h2>No se pudo generar el informe</h2>
+              <p id="errorMessage">Revis&aacute; los datos e intent&aacute; nuevamente.</p>
+            </div>
+
+            <article id="reportView" class="report-view hidden"></article>
+            <section class="chat-panel chat-collapsed" id="chatPanel" aria-labelledby="chatTitle">
+              <div class="panel-heading compact">
+                <div>
+                  <h2 id="chatTitle">Chat</h2>
+                  <p id="chatHint">Pregunt&aacute; sobre este informe o los reportes guardados.</p>
+                </div>
+                <button class="secondary-button compact-button chat-toggle" id="chatToggle" type="button" aria-expanded="false" aria-controls="chatMessages">Abrir</button>
+              </div>
+              <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+              <form id="chatForm" class="chat-composer">
+                <input id="chatInput" type="text" aria-label="Pregunta para el chat" placeholder="Pregunt&aacute; sobre entrevistas, sueldos, cultura o comparaciones..." />
+                <button class="primary-button chat-send" id="chatSubmit" type="submit">Enviar</button>
+              </form>
+            </section>
+          </section>
+        </div>
+
+        <aside class="history-panel" aria-labelledby="historyTitle">
+          <div class="panel-heading compact">
+            <h2 id="historyTitle">Historial</h2>
+            <div class="history-actions">
+              <button class="secondary-button compact-button" id="clearHistory" type="button">Borrar historial</button>
+              <button class="icon-button" id="refreshHistory" type="button" title="Actualizar historial" aria-label="Actualizar historial">&#8635;</button>
+            </div>
+          </div>
+          <div id="historyList" class="history-list"></div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="/static/app.js?v=14" defer></script>
+  </body>
+</html>
