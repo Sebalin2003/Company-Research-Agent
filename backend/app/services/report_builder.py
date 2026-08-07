@@ -8,7 +8,7 @@ from typing import Protocol
 from backend.app.core.config import Settings
 from backend.app.core.time import utc_now
 from backend.app.db import models
-from backend.app.domain.cv import extract_candidate_signals
+from backend.app.domain.cv import CandidateSignals, extract_candidate_signals, select_cv_evidence_lines
 from backend.app.domain.reports import (
     ClaimSchema,
     ClaimType,
@@ -26,6 +26,7 @@ from backend.app.domain.reports import (
     WarningSchema,
     WarningSeverity,
 )
+from backend.app.llm.cv_tailoring import GeminiCVTailoringService, fallback_warning
 from backend.app.llm.gemini import GeminiReportSynthesizer
 from backend.app.llm.synthesizer import ReportSynthesizer, SynthesisError, SynthesisRequest
 from backend.app.research.content_extractor import HttpContentExtractor
@@ -277,10 +278,12 @@ class RealReportBuilder:
         settings: Settings,
         research_pipeline: ResearchPipeline,
         synthesizer: ReportSynthesizer,
+        cv_tailoring_service: GeminiCVTailoringService | None = None,
     ) -> None:
         self.settings = settings
         self.research_pipeline = research_pipeline
         self.synthesizer = synthesizer
+        self.cv_tailoring_service = cv_tailoring_service
 
     def build(
         self,
@@ -292,6 +295,10 @@ class RealReportBuilder:
     ) -> StructuredReportSchema:
         build_started = time.perf_counter()
         research_result = self.research_pipeline.run(report.company.name)
+        if not research_result.sources or not research_result.evidence:
+            raise RuntimeError(
+                "No se encontraron fuentes suficientes para generar el informe."
+            )
         synthesis_request = SynthesisRequest(
             report_id=report.id,
             company_id=report.company.id,
@@ -299,10 +306,10 @@ class RealReportBuilder:
             normalized_company_name=report.company.normalized_name,
             sources=research_result.sources,
             evidence=research_result.evidence,
-            include_cv=include_cv,
-            include_cv_tailoring=include_cv_tailoring,
-            include_adapted_cv_draft=include_adapted_cv_draft,
-            cv_text=cv_text,
+            include_cv=False,
+            include_cv_tailoring=False,
+            include_adapted_cv_draft=False,
+            cv_text=None,
         )
         synthesis_started = time.perf_counter()
         try:
@@ -316,20 +323,23 @@ class RealReportBuilder:
             )
         synthesis_duration_ms = elapsed_ms(synthesis_started)
 
-        personalized_preparation = synthesized.personalized_preparation
-        cv_tailoring = synthesized.cv_tailoring
+        personalized_preparation = None
+        cv_tailoring = None
         if include_cv or include_cv_tailoring:
             signals = extract_candidate_signals(cv_text or "")
             evidence_ids = first_evidence_ids(synthesized)
             if include_cv and personalized_preparation is None:
                 personalized_preparation = build_personalized_preparation(signals, evidence_ids)
-            if include_cv_tailoring and cv_tailoring is None:
-                cv_tailoring = build_cv_tailoring(
-                    signals=signals,
+            if include_cv_tailoring:
+                cv_tailoring = self.build_ai_or_rule_cv_tailoring(
                     company_name=report.company.name,
+                    signals=signals,
+                    cv_text=cv_text or "",
+                    report=synthesized,
                     evidence_ids=evidence_ids,
                     include_adapted_cv_draft=include_adapted_cv_draft,
                 )
+                cv_tailoring = warn_if_cv_signals_are_weak(cv_tailoring, signals)
 
         completed = synthesized.model_copy(
             update={
@@ -366,6 +376,38 @@ class RealReportBuilder:
         )
         return complete_report_sections(completed)
 
+    def build_ai_or_rule_cv_tailoring(
+        self,
+        company_name: str,
+        signals: CandidateSignals,
+        cv_text: str,
+        report: StructuredReportSchema,
+        evidence_ids: list[str],
+        include_adapted_cv_draft: bool,
+    ):
+        fallback = build_cv_tailoring(
+            signals=signals,
+            company_name=company_name,
+            evidence_ids=evidence_ids,
+            include_adapted_cv_draft=include_adapted_cv_draft,
+        )
+        service = self.cv_tailoring_service or GeminiCVTailoringService(
+            api_key=self.settings.gemini_api_key or "",
+            model=self.settings.gemini_model,
+        )
+        try:
+            return service.build(
+                company_name=company_name,
+                signals=signals,
+                cv_evidence_lines=select_cv_evidence_lines(cv_text, signals),
+                report=report,
+                include_adapted_cv_draft=include_adapted_cv_draft,
+            )
+        except SynthesisError as exc:
+            return fallback.model_copy(
+                update={"warnings": [*fallback.warnings, fallback_warning(str(exc))]}
+            )
+
 
 def build_report_builder(settings: Settings) -> ReportBuilder:
     if settings.search_provider == "mock":
@@ -390,12 +432,30 @@ def build_report_builder(settings: Settings) -> ReportBuilder:
             api_key=settings.gemini_api_key or "",
             model=settings.gemini_model,
         )
-        return RealReportBuilder(settings, research_pipeline, synthesizer)
+        cv_tailoring_service = GeminiCVTailoringService(
+            api_key=settings.gemini_api_key or "",
+            model=settings.gemini_model,
+        )
+        return RealReportBuilder(settings, research_pipeline, synthesizer, cv_tailoring_service)
     raise ValueError(f"Search provider no soportado: {settings.search_provider}")
 
 
 def first_evidence_ids(report: StructuredReportSchema) -> list[str]:
     return [item.id for item in report.evidence[:1]]
+
+
+def warn_if_cv_signals_are_weak(cv_tailoring, signals: CandidateSignals):
+    if signals.confidence not in {"low", "unknown"}:
+        return cv_tailoring
+    if any(warning.type == "insufficient_cv_detail" for warning in cv_tailoring.warnings):
+        return cv_tailoring
+    warning = WarningSchema(
+        id="warning_cv_tailoring_detail",
+        type="insufficient_cv_detail",
+        message="La adaptacion del CV es limitada porque faltan logros, herramientas o roles claros.",
+        severity=WarningSeverity.medium,
+    )
+    return cv_tailoring.model_copy(update={"warnings": [*cv_tailoring.warnings, warning]})
 
 
 def build_fallback_report(

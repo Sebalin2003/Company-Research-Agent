@@ -121,6 +121,32 @@ def extract_candidate_signals(cv_text: str) -> CandidateSignals:
     )
 
 
+def select_cv_evidence_lines(
+    cv_text: str,
+    signals: CandidateSignals,
+    max_lines: int = 8,
+) -> list[str]:
+    signal_terms = {
+        *signals.roles,
+        *signals.industries,
+        *signals.hard_skills,
+        *signals.soft_skills,
+        *signals.tools,
+    }
+    if signals.seniority:
+        signal_terms.add(signals.seniority)
+    selected = []
+    for line in useful_lines(cv_text):
+        lowered = normalize_text(line)
+        if line in signals.education or line in signals.achievements:
+            selected.append(line)
+        elif any(term and contains_term(lowered, term) for term in signal_terms):
+            selected.append(line)
+        if len(selected) >= max_lines:
+            break
+    return list(dict.fromkeys(selected))
+
+
 def candidate_signals_to_schema(signals: CandidateSignals) -> CVProfileSchema:
     return CVProfileSchema(
         roles=signals.roles,

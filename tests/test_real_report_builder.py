@@ -30,6 +30,7 @@ from backend.app.services.report_builder import (
     build_report_builder,
     clarify_unavailable_exact_details,
 )
+from backend.app.services.cv_preparation import build_cv_tailoring
 
 
 class RecordingPipeline:
@@ -136,13 +137,54 @@ class FailingSynthesizer:
         raise SynthesisError("bad model output")
 
 
+class RecordingCVTailoringService:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def build(
+        self,
+        company_name,
+        signals,
+        cv_evidence_lines,
+        report,
+        include_adapted_cv_draft,
+    ):
+        self.calls.append(
+            {
+                "company_name": company_name,
+                "signals": signals,
+                "cv_evidence_lines": cv_evidence_lines,
+                "report": report,
+                "include_adapted_cv_draft": include_adapted_cv_draft,
+            }
+        )
+        return build_cv_tailoring(
+            signals=signals,
+            company_name=company_name,
+            evidence_ids=["evidence_1"],
+            include_adapted_cv_draft=include_adapted_cv_draft,
+        )
+
+
+class FailingCVTailoringService:
+    def build(self, **kwargs):
+        raise SynthesisError("tailoring unavailable")
+
+
+class EmptyPipeline:
+    def run(self, company_name: str) -> ResearchPipelineResult:
+        return ResearchPipelineResult(sources=[], evidence=[], search_count=8)
+
+
 def test_real_report_builder_runs_research_and_synthesis_with_cv_flags() -> None:
     pipeline = RecordingPipeline()
     synthesizer = RecordingSynthesizer()
+    cv_tailoring_service = RecordingCVTailoringService()
     builder = RealReportBuilder(
         Settings(search_provider="tavily", gemini_model="gemini-test-model"),
         pipeline,  # type: ignore[arg-type]
         synthesizer,
+        cv_tailoring_service,  # type: ignore[arg-type]
     )
     company = SimpleNamespace(id="company_1", name="Acme", normalized_name="acme")
     report = SimpleNamespace(id="report_1", company=company)
@@ -157,9 +199,11 @@ def test_real_report_builder_runs_research_and_synthesis_with_cv_flags() -> None
 
     assert pipeline.company_name == "Acme"
     assert synthesizer.request is not None
-    assert synthesizer.request.include_cv is True
-    assert synthesizer.request.include_cv_tailoring is True
-    assert synthesizer.request.include_adapted_cv_draft is True
+    assert synthesizer.request.include_cv is False
+    assert synthesizer.request.include_cv_tailoring is False
+    assert synthesizer.request.include_adapted_cv_draft is False
+    assert synthesizer.request.cv_text is None
+    assert cv_tailoring_service.calls[0]["cv_evidence_lines"]
     assert structured_report.report_id == "report_1"
     assert structured_report.company.id == "company_1"
     assert structured_report.metadata.search_provider == "tavily"
@@ -213,6 +257,50 @@ def test_real_report_builder_returns_fallback_report_when_synthesis_fails() -> N
     assert "bad model output" in structured_report.warnings[0].message
     assert len(structured_report.sections) == 9
     assert structured_report.sections[1].missing_evidence is True
+
+
+def test_real_report_builder_falls_back_when_ai_cv_tailoring_fails() -> None:
+    builder = RealReportBuilder(
+        Settings(search_provider="tavily", gemini_model="gemini-test-model"),
+        RecordingPipeline(),  # type: ignore[arg-type]
+        RecordingSynthesizer(),
+        FailingCVTailoringService(),  # type: ignore[arg-type]
+    )
+    company = SimpleNamespace(id="company_1", name="Acme", normalized_name="acme")
+    report = SimpleNamespace(id="report_1", company=company)
+
+    structured_report = builder.build(
+        report,  # type: ignore[arg-type]
+        include_cv=True,
+        include_cv_tailoring=True,
+        include_adapted_cv_draft=False,
+        cv_text="Python y SQL.",
+    )
+
+    assert structured_report.cv_tailoring is not None
+    assert structured_report.cv_tailoring.warnings[-1].type == "ai_cv_tailoring_fallback"
+
+
+def test_real_report_builder_fails_when_real_search_finds_no_sources() -> None:
+    builder = RealReportBuilder(
+        Settings(search_provider="tavily", gemini_model="gemini-test-model"),
+        EmptyPipeline(),  # type: ignore[arg-type]
+        RecordingSynthesizer(),
+    )
+    company = SimpleNamespace(id="company_1", name="Acme", normalized_name="acme")
+    report = SimpleNamespace(id="report_1", company=company)
+
+    try:
+        builder.build(
+            report,  # type: ignore[arg-type]
+            include_cv=False,
+            include_cv_tailoring=False,
+            include_adapted_cv_draft=False,
+        )
+    except RuntimeError as exc:
+        assert "No se encontraron fuentes suficientes" in str(exc)
+    else:
+        raise AssertionError("Expected empty real search to fail the report.")
 
 
 def test_build_report_builder_keeps_mock_as_default() -> None:

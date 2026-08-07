@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.app.domain.cv import extract_candidate_signals
+from backend.app.domain.cv import extract_candidate_signals, select_cv_evidence_lines
 from backend.app.services.cv_preparation import build_cv_tailoring, build_personalized_preparation
 
 
@@ -37,6 +37,23 @@ def test_personalized_preparation_uses_detected_cv_profile() -> None:
     assert preparation.fit_summary.evidence_ids == ["evidence_1"]
     assert preparation.suggested_pitch is not None
     assert "analista de datos" in preparation.suggested_pitch.text
+
+
+def test_select_cv_evidence_lines_keeps_only_relevant_cv_lines() -> None:
+    cv_text = """
+    Data analyst con SQL y Excel.
+    Esta linea privada no coincide con senales.
+    Universidad de Buenos Aires.
+    Optimice tableros comerciales.
+    """
+    signals = extract_candidate_signals(cv_text)
+
+    lines = select_cv_evidence_lines(cv_text, signals)
+
+    assert "Data analyst con SQL y Excel." in lines
+    assert "Universidad de Buenos Aires." in lines
+    assert "Optimice tableros comerciales." in lines
+    assert "Esta linea privada no coincide con senales." not in lines
 
 
 def test_cv_tailoring_keeps_unverified_metrics_out_of_draft() -> None:
