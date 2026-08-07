@@ -295,10 +295,6 @@ class RealReportBuilder:
     ) -> StructuredReportSchema:
         build_started = time.perf_counter()
         research_result = self.research_pipeline.run(report.company.name)
-        if not research_result.sources or not research_result.evidence:
-            raise RuntimeError(
-                "No se encontraron fuentes suficientes para generar el informe."
-            )
         synthesis_request = SynthesisRequest(
             report_id=report.id,
             company_id=report.company.id,
@@ -312,15 +308,23 @@ class RealReportBuilder:
             cv_text=None,
         )
         synthesis_started = time.perf_counter()
-        try:
-            synthesized = self.synthesizer.synthesize(synthesis_request)
-        except SynthesisError as exc:
+        if not research_result.sources or not research_result.evidence:
             synthesized = build_fallback_report(
                 report,
                 research_result,
                 self.settings,
-                synthesis_error=str(exc),
+                synthesis_error="No se encontraron fuentes suficientes para generar el informe.",
             )
+        else:
+            try:
+                synthesized = self.synthesizer.synthesize(synthesis_request)
+            except SynthesisError as exc:
+                synthesized = build_fallback_report(
+                    report,
+                    research_result,
+                    self.settings,
+                    synthesis_error=str(exc),
+                )
         synthesis_duration_ms = elapsed_ms(synthesis_started)
 
         personalized_preparation = None
@@ -513,23 +517,32 @@ def build_fallback_report(
             )
         ]
 
+    has_evidence = bool(claim_ids)
+    summary = (
+        f"Informe con informacion limitada para {report.company.name}. "
+        "La busqueda real no encontro evidencia suficiente para generar afirmaciones factuales."
+    )
+    if has_evidence:
+        summary = (
+            f"Informe de respaldo para {report.company.name}. "
+            "La busqueda real encontro fuentes, pero la sintesis con Gemini no devolvio JSON valido."
+        )
+
     sections = [
         SectionSchema(
             type=SectionType.executive_summary,
             title="Resumen ejecutivo",
-            summary=(
-                f"Informe de respaldo para {report.company.name}. "
-                "La busqueda real encontro fuentes, pero la sintesis con Gemini no devolvio JSON valido."
-            ),
+            summary=summary,
             claims=claims,
-            confidence=ConfidenceLevel.low if not claim_ids else ConfidenceLevel.medium,
-            missing_evidence=not claim_ids,
+            confidence=ConfidenceLevel.medium if has_evidence else ConfidenceLevel.low,
+            missing_evidence=not has_evidence,
         ),
     ]
+    warning_type = "llm_synthesis_failed" if has_evidence else "insufficient_research_evidence"
     warnings = [
         WarningSchema(
-            id="warning_llm_synthesis_failed",
-            type="llm_synthesis_failed",
+            id=f"warning_{warning_type}",
+            type=warning_type,
             message=fallback_warning_message(synthesis_error),
             severity=WarningSeverity.medium,
             related_section=SectionType.warnings,
@@ -560,6 +573,11 @@ def build_fallback_report(
 
 
 def fallback_warning_message(synthesis_error: str | None) -> str:
+    if synthesis_error and "No se encontraron fuentes suficientes" in synthesis_error:
+        return (
+            "No se encontraron fuentes suficientes para generar un informe factual. "
+            "Se muestra un informe limitado sin inventar datos."
+        )
     message = (
         "Gemini no genero un informe estructurado valido. "
         "Se muestra un informe de respaldo basado en evidencia recolectada."

@@ -12,17 +12,29 @@ def test_frontend_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=14" in response.text
-    assert "/static/styles.css?v=14" in response.text
+    assert "/static/app.js?v=15" in response.text
+    assert "/static/styles.css?v=15" in response.text
+    assert "viewport-fit=cover" in response.text
     assert 'id="cvFile"' in response.text
     assert 'class="upload-control"' in response.text
+    assert 'id="cvDisclosure"' in response.text
+    assert 'id="cvTextDisclosure"' in response.text
+    assert "Usar mi CV" in response.text
+    assert 'id="includeTailoring" type="checkbox" disabled' in response.text
+    assert 'id="includeDraft" type="checkbox" disabled' in response.text
+    assert 'id="formError" role="alert"' in response.text
+    assert 'id="loadingState"' in response.text
+    assert 'aria-busy="true"' in response.text
+    assert 'id="retryButton"' in response.text
+    assert 'id="reportView" class="report-view hidden" tabindex="-1"' in response.text
     assert 'id="chatForm"' in response.text
     assert 'class="chat-composer"' in response.text
     assert 'id="chatToggle"' in response.text
     assert 'class="chat-panel chat-collapsed"' in response.text
+    assert "Preguntar sobre el informe" in response.text
     assert 'id="chatInput" type="text"' in response.text
     assert 'id="clearHistory"' in response.text
-    assert "Borrar historial" in response.text
+    assert "Borrar todo" in response.text
     assert "Informe en espa&ntilde;ol con fuentes" not in response.text
     assert ">Pregunta<" not in response.text
     assert response.text.index('class="query-panel"') < response.text.index('class="report-panel"')
@@ -38,7 +50,7 @@ def test_frontend_assets_are_served() -> None:
 
     assert css_response.status_code == 200
     assert "grid-template-columns" in css_response.text
-    assert "minmax(440px, 1.16fr)" in css_response.text
+    assert "minmax(500px, 1fr)" in css_response.text
     assert ".report-panel" in css_response.text
     assert "grid-template-rows: minmax(0, 1fr) auto" in css_response.text
     assert "height: calc(100vh - 116px)" in css_response.text
@@ -51,6 +63,7 @@ def test_frontend_assets_are_served() -> None:
     assert ".chat-composer input" in css_response.text
     assert ".chat-panel.chat-collapsed .chat-messages" in css_response.text
     assert ".chat-panel {\n  align-self: start;\n  background: transparent;" in css_response.text
+    assert ".chat-panel .panel-heading.compact {\n    align-items: stretch;\n    flex-direction: column;" in css_response.text
     assert "border-top: 1px solid var(--line)" in css_response.text
     assert "max-height: 180px" in css_response.text
     assert "min-height: 72px" in css_response.text
@@ -69,8 +82,28 @@ def test_frontend_assets_are_served() -> None:
     assert "updateChatState" in js_response.text
     assert "renderRagStatusChip" in js_response.text
     assert "active_report_pending_index" in js_response.text
-    assert "Indexando chat" in js_response.text
     assert "Chat listo" in js_response.text
     assert ".meta-chip.rag-indexing" in css_response.text
+    assert ".report-nav" in css_response.text
+    assert "position: sticky" in css_response.text
+    assert ".evidence-section" in css_response.text
+    assert ".confidence-high" in css_response.text
+    assert ".suggestion-item.needs-confirmation" in css_response.text
+    assert "env(safe-area-inset-top)" in css_response.text
+    assert "@media (pointer: coarse)" in css_response.text
+    assert ".quiet-button" in css_response.text
     assert "renderClaimMeta" not in js_response.text
     assert "Evidencia:" not in js_response.text
+    assert "renderReportNavigation" in js_response.text
+    assert "renderSectionClaims" in js_response.text
+    assert "confidenceBadge" in js_response.text
+    assert "Evidencia limitada" in js_response.text
+    assert "Sugerencias asistidas por IA" in js_response.text
+    assert "Agregar solo si es cierto" in js_response.text
+    assert "copyAdaptedDraft" in js_response.text
+    assert "navigator.clipboard.writeText" in js_response.text
+    assert "reportStatusLabel" in js_response.text
+    assert "Informe listo" in js_response.text
+    assert "Preparando chat" in js_response.text
+    assert "Estado de preparaci" in js_response.text
+    assert "RAG." not in js_response.text

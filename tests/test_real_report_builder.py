@@ -281,7 +281,7 @@ def test_real_report_builder_falls_back_when_ai_cv_tailoring_fails() -> None:
     assert structured_report.cv_tailoring.warnings[-1].type == "ai_cv_tailoring_fallback"
 
 
-def test_real_report_builder_fails_when_real_search_finds_no_sources() -> None:
+def test_real_report_builder_returns_limited_report_when_real_search_finds_no_sources() -> None:
     builder = RealReportBuilder(
         Settings(search_provider="tavily", gemini_model="gemini-test-model"),
         EmptyPipeline(),  # type: ignore[arg-type]
@@ -290,17 +290,19 @@ def test_real_report_builder_fails_when_real_search_finds_no_sources() -> None:
     company = SimpleNamespace(id="company_1", name="Acme", normalized_name="acme")
     report = SimpleNamespace(id="report_1", company=company)
 
-    try:
-        builder.build(
-            report,  # type: ignore[arg-type]
-            include_cv=False,
-            include_cv_tailoring=False,
-            include_adapted_cv_draft=False,
-        )
-    except RuntimeError as exc:
-        assert "No se encontraron fuentes suficientes" in str(exc)
-    else:
-        raise AssertionError("Expected empty real search to fail the report.")
+    structured_report = builder.build(
+        report,  # type: ignore[arg-type]
+        include_cv=False,
+        include_cv_tailoring=False,
+        include_adapted_cv_draft=False,
+    )
+
+    assert structured_report.status == ReportStatus.completed
+    assert structured_report.sources == []
+    assert structured_report.evidence == []
+    assert structured_report.warnings[0].type == "insufficient_research_evidence"
+    assert structured_report.sections[0].missing_evidence is True
+    assert "informacion limitada" in structured_report.sections[0].summary
 
 
 def test_build_report_builder_keeps_mock_as_default() -> None:

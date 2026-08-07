@@ -2,6 +2,8 @@ const state = {
   currentReportId: null,
   currentReportReady: false,
   chatExpanded: false,
+  currentDraft: "",
+  lastResearchPayload: null,
   pollTimer: null,
   indexPollTimer: null,
 };
@@ -13,6 +15,8 @@ const els = {
   cvFileName: document.querySelector("#cvFileName"),
   cvFileStatus: document.querySelector("#cvFileStatus"),
   cvText: document.querySelector("#cvText"),
+  cvDisclosure: document.querySelector("#cvDisclosure"),
+  cvTextDisclosure: document.querySelector("#cvTextDisclosure"),
   chatForm: document.querySelector("#chatForm"),
   chatPanel: document.querySelector("#chatPanel"),
   chatToggle: document.querySelector("#chatToggle"),
@@ -22,12 +26,15 @@ const els = {
   chatSubmit: document.querySelector("#chatSubmit"),
   includeTailoring: document.querySelector("#includeTailoring"),
   includeDraft: document.querySelector("#includeDraft"),
+  formError: document.querySelector("#formError"),
   clearButton: document.querySelector("#clearButton"),
+  retryButton: document.querySelector("#retryButton"),
   refreshHistory: document.querySelector("#refreshHistory"),
   clearHistory: document.querySelector("#clearHistory"),
   connectionStatus: document.querySelector("#connectionStatus"),
   emptyState: document.querySelector("#emptyState"),
   loadingState: document.querySelector("#loadingState"),
+  loadingCompany: document.querySelector("#loadingCompany"),
   loadingMessage: document.querySelector("#loadingMessage"),
   errorState: document.querySelector("#errorState"),
   errorMessage: document.querySelector("#errorMessage"),
@@ -37,9 +44,11 @@ const els = {
 
 els.form.addEventListener("submit", handleSubmit);
 els.cvFile.addEventListener("change", handleCvUpload);
+els.cvText.addEventListener("input", updateCvControls);
 els.chatForm.addEventListener("submit", handleChatSubmit);
 els.chatToggle.addEventListener("click", () => setChatExpanded(!state.chatExpanded));
 els.clearButton.addEventListener("click", clearForm);
+els.retryButton.addEventListener("click", retryResearch);
 els.refreshHistory.addEventListener("click", loadHistory);
 els.clearHistory.addEventListener("click", deleteAllHistory);
 els.includeDraft.addEventListener("change", () => {
@@ -51,10 +60,12 @@ els.includeTailoring.addEventListener("change", () => {
   if (!els.includeTailoring.checked) {
     els.includeDraft.checked = false;
   }
+  updateCvControls();
 });
 
 loadHistory();
 updateChatState();
+updateCvControls();
 
 async function handleSubmit(event) {
   event.preventDefault();
@@ -67,16 +78,21 @@ async function handleSubmit(event) {
   };
 
   if (!payload.company_name) {
-    showError("Ingres\u00e1 el nombre de la empresa.");
+    showFormError("Ingres\u00e1 el nombre de la empresa.");
+    els.companyName.focus();
     return;
   }
   if (payload.include_cv_tailoring && !payload.cv_text) {
-    showError("Peg\u00e1 tu CV para activar la adaptaci\u00f3n.");
+    showFormError("Sub\u00ed o peg\u00e1 tu CV para activar las sugerencias.");
+    els.cvDisclosure.open = true;
     return;
   }
 
+  hideFormError();
+  state.lastResearchPayload = payload;
   setBusy(true);
-  showLoading("La investigaci\u00f3n est\u00e1 en cola.");
+  showLoading("La investigaci\u00f3n est\u00e1 en cola.", payload.company_name);
+  focusResultOnNarrowScreen();
   try {
     const response = await fetchJson("/api/research", {
       method: "POST",
@@ -110,13 +126,15 @@ async function handleCvUpload() {
       body: formData,
     });
     els.cvText.value = payload.cv_text || "";
+    els.cvTextDisclosure.open = false;
     els.cvFileName.textContent = payload.filename;
     els.cvFileStatus.textContent = `Texto listo para revisar (${payload.character_count} caracteres).`;
+    updateCvControls();
   } catch (error) {
     els.cvFile.value = "";
     els.cvFileName.textContent = "No se pudo leer el archivo";
     els.cvFileStatus.textContent = "Prob\u00e1 con un PDF o DOCX legible.";
-    showError(error.message);
+    showFormError(error.message);
   }
 }
 
@@ -138,7 +156,10 @@ async function pollReport(statusUrl) {
         showError(payload.error?.message || "No se pudo generar el informe.");
         return;
       }
-      showLoading(payload.progress?.message || "La investigaci\u00f3n sigue en curso.");
+      showLoading(
+        payload.progress?.message || "La investigaci\u00f3n sigue en curso.",
+        payload.company?.name || state.lastResearchPayload?.company_name
+      );
     } catch (error) {
       clearPoll();
       setBusy(false);
@@ -147,6 +168,28 @@ async function pollReport(statusUrl) {
   };
   await tick();
   state.pollTimer = window.setInterval(tick, 1800);
+}
+
+async function retryResearch() {
+  if (!state.lastResearchPayload) {
+    els.companyName.focus();
+    return;
+  }
+  setBusy(true);
+  showLoading("Volviendo a iniciar la investigaci\u00f3n.", state.lastResearchPayload.company_name);
+  try {
+    const response = await fetchJson("/api/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state.lastResearchPayload),
+    });
+    state.currentReportId = response.report_id;
+    state.currentReportReady = false;
+    pollReport(response.status_url);
+  } catch (error) {
+    setBusy(false);
+    showError(error.message);
+  }
 }
 
 async function loadHistory() {
@@ -165,19 +208,26 @@ function renderReport(report) {
   }
   state.currentReportId = report.report_id;
   state.currentReportReady = report.status === "completed";
+  state.currentDraft = report.cv_tailoring?.adapted_cv_draft?.content_markdown || "";
   updateChatState(report.company.name);
   hideAllStates();
   els.connectionStatus.textContent = "Informe listo";
   els.reportView.classList.remove("hidden");
+  const incompleteSections = (report.sections || []).filter((section) => section.missing_evidence).length;
   els.reportView.innerHTML = `
     <header class="report-header">
-      <p class="eyebrow">Informe generado</p>
-      <h2>${escapeHtml(report.company.name)}</h2>
+      <div class="report-title-row">
+        <div>
+          <span class="context-label">Informe generado</span>
+          <h2 id="reportTitle">${escapeHtml(report.company.name)}</h2>
+        </div>
+        ${report.generated_at ? `<time datetime="${escapeAttribute(report.generated_at)}">${formatDate(report.generated_at)}</time>` : ""}
+      </div>
       <div class="report-meta">
         ${chip(`Fuentes: ${report.metadata.source_count}`)}
         ${chip(`Hallazgos: ${report.metadata.evidence_count}`)}
         ${chip(report.metadata.used_cv ? "Con CV" : "Sin CV")}
-        ${chip(report.metadata.search_provider)}
+        ${incompleteSections ? chip(`${incompleteSections} secciones con evidencia limitada`, "warning") : chip("Evidencia suficiente", "success")}
         ${renderRagStatusChip(report.metadata)}
       </div>
       ${
@@ -185,20 +235,58 @@ function renderReport(report) {
           ? `<button class="danger-button" type="button" id="deleteCvData">Eliminar datos del CV</button>`
           : ""
       }
+      <details class="technical-details">
+        <summary>Detalles t&eacute;cnicos</summary>
+        <p>Proveedor de b&uacute;squeda: ${escapeHtml(report.metadata.search_provider)} &middot; Modelo: ${escapeHtml(report.metadata.llm_model)}</p>
+      </details>
     </header>
 
-    ${renderSections(report)}
-    ${renderPreparation(report.personalized_preparation)}
-    ${renderTailoring(report.cv_tailoring)}
-    ${renderSources(report.sources || [])}
-    ${renderWarnings(report.warnings || [])}
+    ${renderReportNavigation(report)}
+    <div class="report-content">
+      <section class="report-band" id="empresa" aria-labelledby="companySectionTitle">
+        <div class="band-heading">
+          <span class="context-label">Empresa</span>
+          <h2 id="companySectionTitle">Qu&eacute; sabemos</h2>
+        </div>
+        ${renderSections(report)}
+      </section>
+      ${renderPreparation(report.personalized_preparation)}
+      ${renderTailoring(report.cv_tailoring)}
+      <section class="report-band" id="fuentes" aria-labelledby="sourcesTitle">
+        <div class="band-heading">
+          <span class="context-label">Trazabilidad</span>
+          <h2 id="sourcesTitle">Fuentes y advertencias</h2>
+        </div>
+        ${renderSources(report.sources || [])}
+        ${renderWarnings(report.warnings || [], { globalOnly: true })}
+      </section>
+    </div>
   `;
 
   const deleteButton = document.querySelector("#deleteCvData");
   if (deleteButton) {
     deleteButton.addEventListener("click", () => deleteCvData(report.report_id));
   }
+  document.querySelector("#copyDraft")?.addEventListener("click", copyAdaptedDraft);
+  els.reportView.focus({ preventScroll: window.innerWidth > 760 });
+  if (window.innerWidth <= 760) {
+    els.reportView.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+  }
   watchRagIndexStatus(report);
+}
+
+function renderReportNavigation(report) {
+  const links = [
+    ["empresa", "Empresa"],
+    ...(report.personalized_preparation ? [["preparacion", "Preparaci\u00f3n"]] : []),
+    ...(report.cv_tailoring ? [["cv", "CV"]] : []),
+    ["fuentes", "Fuentes"],
+  ];
+  return `
+    <nav class="report-nav" aria-label="Secciones del informe">
+      ${links.map(([id, label]) => `<a href="#${id}">${label}</a>`).join("")}
+    </nav>
+  `;
 }
 
 function renderSections(report) {
@@ -208,19 +296,62 @@ function renderSections(report) {
   }
   const citationIndex = buildCitationIndex(report);
   return `
-    <section class="section-grid">
-      ${sections.map((section) => renderSection(section, citationIndex)).join("")}
+    <div class="section-grid">
+      ${sections.map((section) => renderSection(section, citationIndex, report.warnings || [])).join("")}
+    </div>
+  `;
+}
+
+function renderSection(section, citationIndex, warnings) {
+  const sectionWarnings = warnings.filter((warning) => warning.related_section === section.type);
+  return `
+    <section class="evidence-section" id="report-${escapeAttribute(section.type)}">
+      <div class="evidence-heading">
+        <h3>${escapeHtml(section.title)}</h3>
+        <div class="evidence-status">
+          ${confidenceBadge(section.confidence)}
+          ${section.missing_evidence ? `<span class="status-badge warning">Evidencia limitada</span>` : ""}
+        </div>
+      </div>
+      <p>${escapeHtml(section.summary)}</p>
+      ${renderSectionCitations(section, citationIndex)}
+      ${renderSectionClaims(section.claims || [], citationIndex)}
+      ${renderWarnings(sectionWarnings)}
     </section>
   `;
 }
 
-function renderSection(section, citationIndex) {
+function renderSectionClaims(claims, citationIndex) {
+  if (!claims.length) {
+    return "";
+  }
   return `
-    <div class="report-card">
-      <h3>${escapeHtml(section.title)}</h3>
-      <p>${escapeHtml(section.summary)}</p>
-      ${renderSectionCitations(section, citationIndex)}
-    </div>
+    <details class="evidence-details">
+      <summary>Ver evidencia y criterios (${claims.length})</summary>
+      <ul class="claim-list detailed-claims">
+        ${claims.map((claim) => {
+          const citations = (claim.evidence_ids || [])
+            .map((evidenceId) => citationIndex.get(evidenceId))
+            .filter(Boolean);
+          return `
+            <li>
+              <div class="claim-heading">
+                <span class="claim-type">${claimTypeLabel(claim.type)}</span>
+                ${confidenceBadge(claim.confidence)}
+              </div>
+              <p>${escapeHtml(claim.text)}</p>
+              ${
+                citations.length
+                  ? `<div class="citation-list">${citations.map((citation) => `
+                      <a href="${escapeAttribute(citation.url)}" target="_blank" rel="noreferrer">${escapeHtml(citation.title)}</a>
+                    `).join("")}</div>`
+                  : `<small>Sin una fuente directa asociada.</small>`
+              }
+            </li>
+          `;
+        }).join("")}
+      </ul>
+    </details>
   `;
 }
 
@@ -263,13 +394,34 @@ function renderPreparation(preparation) {
     return "";
   }
   return `
-    <section class="report-card cv-block">
-      <h3>Preparaci\u00f3n personalizada</h3>
-      ${preparation.suggested_pitch ? `<p>${escapeHtml(preparation.suggested_pitch.text)}</p>` : ""}
-      ${renderItems("Fortalezas", preparation.strengths_to_highlight)}
-      ${renderItems("Brechas a preparar", preparation.gaps_to_prepare)}
-      ${renderItems("Preguntas posibles", preparation.personalized_questions)}
-      ${renderItems("Preguntas para la empresa", preparation.questions_for_company)}
+    <section class="report-band preparation-band" id="preparacion" aria-labelledby="preparationTitle">
+      <div class="band-heading">
+        <span class="context-label">Preparaci&oacute;n</span>
+        <h2 id="preparationTitle">Tu perfil frente a la empresa</h2>
+      </div>
+      ${
+        preparation.fit_summary
+          ? `<div class="fit-summary">
+              <div>${confidenceBadge(preparation.fit_summary.confidence)}<strong>Lectura de encaje</strong></div>
+              <p>${escapeHtml(preparation.fit_summary.summary)}</p>
+            </div>`
+          : ""
+      }
+      ${
+        preparation.suggested_pitch
+          ? `<div class="pitch-block">
+              <h3>Presentaci&oacute;n sugerida</h3>
+              <p>${escapeHtml(preparation.suggested_pitch.text)}</p>
+            </div>`
+          : ""
+      }
+      <div class="preparation-groups">
+        ${renderItems("Fortalezas para destacar", preparation.strengths_to_highlight)}
+        ${renderItems("Brechas para preparar", preparation.gaps_to_prepare)}
+        ${renderItems("Preguntas que podr&iacute;an hacerte", preparation.personalized_questions)}
+        ${renderItems("Preguntas para la empresa", preparation.questions_for_company)}
+      </div>
+      ${renderWarnings(preparation.warnings || [])}
     </section>
   `;
 }
@@ -278,21 +430,67 @@ function renderTailoring(tailoring) {
   if (!tailoring) {
     return "";
   }
-  const suggestions = tailoring.change_suggestions?.map((item) => ({
-    text: item.suggested_text,
-    reason: item.requires_user_confirmation ? "Requiere confirmaci\u00f3n" : item.reason,
-  }));
   return `
-    <section class="report-card cv-block">
-      <h3>Adaptaci\u00f3n del CV</h3>
-      <p>${escapeHtml(tailoring.positioning_summary)}</p>
-      ${renderItems("Cambios sugeridos", suggestions)}
+    <section class="report-band cv-band" id="cv" aria-labelledby="cvTitle">
+      <div class="band-heading cv-heading">
+        <div>
+          <span class="context-label">Sugerencias asistidas por IA</span>
+          <h2 id="cvTitle">Adaptaci&oacute;n del CV</h2>
+        </div>
+        <span class="review-label">Revisar antes de usar</span>
+      </div>
+      <p class="section-lead">${escapeHtml(tailoring.positioning_summary)}</p>
+      ${renderTailoringSuggestions(tailoring.change_suggestions || [])}
       ${
         tailoring.adapted_cv_draft
-          ? `<pre class="draft">${escapeHtml(tailoring.adapted_cv_draft.content_markdown)}</pre>`
+          ? `<div class="draft-block">
+              <div class="draft-heading">
+                <div>
+                  <h3>${escapeHtml(tailoring.adapted_cv_draft.title)}</h3>
+                  <small>${tailoring.adapted_cv_draft.excluded_suggestion_ids?.length || 0} sugerencias no verificadas excluidas.</small>
+                </div>
+                <button class="secondary-button compact-button" id="copyDraft" type="button">Copiar borrador</button>
+              </div>
+              <p class="copy-feedback hidden" id="copyFeedback" role="status">Borrador copiado.</p>
+              <pre class="draft">${escapeHtml(tailoring.adapted_cv_draft.content_markdown)}</pre>
+              ${renderWarnings(tailoring.adapted_cv_draft.warnings || [])}
+            </div>`
           : ""
       }
+      ${renderWarnings(tailoring.warnings || [])}
     </section>
+  `;
+}
+
+function renderTailoringSuggestions(suggestions) {
+  if (!suggestions.length) {
+    return `<p class="empty-inline">No hay cambios seguros para sugerir con la informaci&oacute;n disponible.</p>`;
+  }
+  return `
+    <div class="suggestion-list">
+      ${suggestions.map((item) => `
+        <article class="suggestion-item ${item.type === "add_only_if_true" ? "needs-confirmation" : ""}">
+          <div class="suggestion-meta">
+            <span class="suggestion-type">${suggestionTypeLabel(item.type)}</span>
+            ${confidenceBadge(item.confidence)}
+            ${item.requires_user_confirmation ? `<span class="status-badge warning">Confirmar dato</span>` : `<span class="status-badge success">Basado en tu CV</span>`}
+          </div>
+          ${
+            item.original_text
+              ? `<div class="text-comparison">
+                  <span>Texto actual</span>
+                  <p>${escapeHtml(item.original_text)}</p>
+                </div>`
+              : ""
+          }
+          <div class="text-comparison proposed">
+            <span>Texto sugerido</span>
+            <p>${escapeHtml(item.suggested_text)}</p>
+          </div>
+          <small>${escapeHtml(item.reason)}</small>
+        </article>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -301,8 +499,8 @@ function renderSources(sources) {
     return "";
   }
   return `
-    <section class="report-card">
-      <h3>Fuentes</h3>
+    <div class="sources-block">
+      <h3>Fuentes consultadas</h3>
       <ul class="source-list">
         ${sources.map((source) => `
           <li>
@@ -312,21 +510,26 @@ function renderSources(sources) {
           </li>
         `).join("")}
       </ul>
-    </section>
+    </div>
   `;
 }
 
-function renderWarnings(warnings) {
-  if (!warnings.length) {
+function renderWarnings(warnings, options = {}) {
+  const visibleWarnings = options.globalOnly
+    ? warnings.filter((warning) => !warning.related_section)
+    : warnings;
+  if (!visibleWarnings.length) {
     return "";
   }
   return `
-    <section class="report-card">
-      <h3>Advertencias</h3>
-      <ul class="claim-list">
-        ${warnings.map((warning) => `<li class="warning">${escapeHtml(warning.message)}</li>`).join("")}
-      </ul>
-    </section>
+    <div class="warning-list" aria-label="Advertencias">
+      ${visibleWarnings.map((warning) => `
+        <div class="warning-item severity-${escapeAttribute(warning.severity || "medium")}">
+          <strong>${warningSeverityLabel(warning.severity)}</strong>
+          <p>${escapeHtml(warning.message)}</p>
+        </div>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -339,7 +542,10 @@ function renderItems(title, items = []) {
     <ul class="claim-list">
       ${items.map((item) => `
         <li>
-          ${escapeHtml(item.text)}
+          <div class="item-heading">
+            ${item.confidence ? confidenceBadge(item.confidence) : ""}
+            <p>${escapeHtml(item.text)}</p>
+          </div>
           ${item.reason ? `<small>${escapeHtml(item.reason)}</small>` : ""}
         </li>
       `).join("")}
@@ -354,13 +560,13 @@ function renderHistory(items) {
     return;
   }
   els.historyList.innerHTML = items.map((item) => `
-    <article class="history-item">
+    <article class="history-item ${state.currentReportId === item.report_id ? "selected" : ""}">
       <button class="history-open" type="button" data-report-id="${escapeAttribute(item.report_id)}">
         <strong>${escapeHtml(item.company.name)}</strong>
-        <span>${escapeHtml(item.status)}${item.used_cv ? " &middot; con CV" : ""}</span>
+        <span>${reportStatusLabel(item.status)}${item.used_cv ? " &middot; con CV" : ""}${item.generated_at ? ` &middot; ${formatShortDate(item.generated_at)}` : ""}</span>
         ${item.summary ? `<span>${escapeHtml(item.summary)}</span>` : ""}
       </button>
-      <button class="history-delete" type="button" data-delete-report-id="${escapeAttribute(item.report_id)}" aria-label="Eliminar informe de ${escapeAttribute(item.company.name)}" title="Eliminar informe">&times;</button>
+      <button class="history-delete" type="button" data-delete-report-id="${escapeAttribute(item.report_id)}" aria-label="Eliminar informe de ${escapeAttribute(item.company.name)}" title="Eliminar informe">&#128465;</button>
     </article>
   `).join("");
   document.querySelectorAll("[data-report-id]").forEach((button) => {
@@ -472,8 +678,12 @@ async function fetchJson(url, options = {}) {
 
 function clearForm() {
   els.form.reset();
+  els.cvDisclosure.open = false;
+  els.cvTextDisclosure.open = false;
   els.cvFileName.textContent = "PDF o DOCX";
   els.cvFileStatus.textContent = "Ning\u00fan archivo seleccionado.";
+  hideFormError();
+  updateCvControls();
   clearPoll();
   setBusy(false);
   clearCurrentReport();
@@ -483,6 +693,7 @@ function clearCurrentReport() {
   clearIndexPoll();
   state.currentReportId = null;
   state.currentReportReady = false;
+  state.currentDraft = "";
   els.chatMessages.innerHTML = "";
   updateChatState();
   hideAllStates();
@@ -531,9 +742,10 @@ function scopeLabelText(scope) {
   return labels[scope] || "Usando reportes guardados";
 }
 
-function showLoading(message) {
+function showLoading(message, companyName = "") {
   hideAllStates();
   els.loadingMessage.textContent = message;
+  els.loadingCompany.textContent = companyName || "";
   els.loadingState.classList.remove("hidden");
   els.connectionStatus.textContent = "Investigando";
 }
@@ -543,6 +755,7 @@ function showError(message) {
   els.errorMessage.textContent = message;
   els.errorState.classList.remove("hidden");
   els.connectionStatus.textContent = "Revisar";
+  els.errorState.focus();
 }
 
 function hideAllStates() {
@@ -553,7 +766,68 @@ function hideAllStates() {
 }
 
 function setBusy(isBusy) {
-  els.form.querySelector(".primary-button").disabled = isBusy;
+  const submitButton = els.form.querySelector(".primary-button");
+  submitButton.disabled = isBusy;
+  submitButton.textContent = isBusy ? "Investigando..." : "Generar informe";
+  els.form.setAttribute("aria-busy", String(isBusy));
+}
+
+function updateCvControls() {
+  const hasCv = Boolean(els.cvText.value.trim());
+  els.includeTailoring.disabled = !hasCv;
+  if (!hasCv) {
+    els.includeTailoring.checked = false;
+  }
+  els.includeDraft.disabled = !hasCv || !els.includeTailoring.checked;
+  if (els.includeDraft.disabled) {
+    els.includeDraft.checked = false;
+  }
+  els.cvDisclosure.classList.toggle("has-cv", hasCv);
+  const disclosureAction = els.cvDisclosure.querySelector(".disclosure-action");
+  if (disclosureAction) {
+    disclosureAction.textContent = hasCv ? "CV listo" : "Agregar";
+  }
+}
+
+function showFormError(message) {
+  els.formError.textContent = message;
+  els.formError.classList.remove("hidden");
+}
+
+function hideFormError() {
+  els.formError.textContent = "";
+  els.formError.classList.add("hidden");
+}
+
+function focusResultOnNarrowScreen() {
+  if (window.innerWidth <= 760) {
+    els.loadingState.focus();
+    els.loadingState.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+  }
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || false;
+}
+
+async function copyAdaptedDraft() {
+  const button = document.querySelector("#copyDraft");
+  const feedback = document.querySelector("#copyFeedback");
+  if (!button || !state.currentDraft) {
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(state.currentDraft);
+    button.textContent = "Copiado";
+    feedback?.classList.remove("hidden");
+    window.setTimeout(() => {
+      button.textContent = "Copiar borrador";
+      feedback?.classList.add("hidden");
+    }, 2200);
+  } catch {
+    button.textContent = "No se pudo copiar";
+    feedback?.classList.remove("hidden");
+  }
 }
 
 function clearPoll() {
@@ -587,8 +861,8 @@ function watchRagIndexStatus(report) {
   }, 5000);
 }
 
-function chip(text) {
-  return `<span class="meta-chip">${escapeHtml(text)}</span>`;
+function chip(text, variant = "") {
+  return `<span class="meta-chip ${escapeAttribute(variant)}">${escapeHtml(text)}</span>`;
 }
 
 function renderRagStatusChip(metadata = {}) {
@@ -596,14 +870,14 @@ function renderRagStatusChip(metadata = {}) {
   const count = Number(metadata.rag_indexed_chunk_count || 0);
   const labels = {
     ready: `Chat listo${count ? ` · ${count}` : ""}`,
-    indexing: "Indexando chat",
-    pending: "Chat parcial",
-    failed: "Chat parcial",
+    indexing: "Preparando chat",
+    pending: "Preparando chat",
+    failed: "Chat con informaci\u00f3n parcial",
   };
-  const title = status === "failed" && metadata.rag_index_error
-    ? metadata.rag_index_error
-    : "Estado de indexacion para preguntas con RAG.";
-  return `<span class="meta-chip rag-${escapeAttribute(status)}" title="${escapeAttribute(title)}">${escapeHtml(labels[status] || "Chat parcial")}</span>`;
+  const title = status === "failed"
+    ? "No se pudo preparar toda la informaci\u00f3n para el chat."
+    : "Estado de preparaci\u00f3n del chat.";
+  return `<span class="meta-chip rag-${escapeAttribute(status)}" title="${escapeAttribute(title)}">${escapeHtml(labels[status] || "Preparando chat")}</span>`;
 }
 
 function buildCitationIndex(report) {
@@ -646,6 +920,67 @@ function formatDate(value) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatShortDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("es-AR", {
+    day: "2-digit",
+    month: "short",
+  }).format(date);
+}
+
+function confidenceBadge(value) {
+  const labels = {
+    high: "Confianza alta",
+    medium: "Confianza media",
+    low: "Confianza baja",
+    unknown: "Confianza no definida",
+  };
+  const safeValue = labels[value] ? value : "unknown";
+  return `<span class="confidence-badge confidence-${safeValue}">${labels[safeValue]}</span>`;
+}
+
+function claimTypeLabel(value) {
+  const labels = {
+    fact: "Hecho",
+    inference: "Inferencia",
+    recommendation: "Recomendaci\u00f3n",
+    missing_evidence: "Dato no disponible",
+  };
+  return labels[value] || "Hallazgo";
+}
+
+function suggestionTypeLabel(value) {
+  const labels = {
+    rewrite: "Reescribir",
+    reorder: "Reordenar",
+    emphasize: "Destacar",
+    add_only_if_true: "Agregar solo si es cierto",
+  };
+  return labels[value] || "Sugerencia";
+}
+
+function warningSeverityLabel(value) {
+  const labels = {
+    high: "Revisi\u00f3n necesaria",
+    medium: "Ten\u00e9 en cuenta",
+    low: "Nota",
+  };
+  return labels[value] || labels.medium;
+}
+
+function reportStatusLabel(value) {
+  const labels = {
+    pending: "En cola",
+    running: "Investigando",
+    completed: "Informe listo",
+    failed: "No completado",
+  };
+  return labels[value] || "Estado desconocido";
 }
 
 function escapeHtml(value) {
