@@ -17,6 +17,7 @@ class ResearchRequest(BaseModel):
     company_name: str = Field(min_length=1, max_length=200)
     force_refresh: bool = False
     cv_text: str | None = None
+    job_description: str | None = Field(default=None, max_length=20_000)
     include_cv_tailoring: bool = False
     include_adapted_cv_draft: bool = False
 
@@ -38,10 +39,22 @@ class ResearchRequest(BaseModel):
             raise ValueError("El CV no puede estar vacio.")
         return cleaned
 
+    @field_validator("job_description")
+    @classmethod
+    def job_description_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("La descripcion del puesto no puede estar vacia.")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_cv_options(self) -> ResearchRequest:
         if self.include_cv_tailoring and not self.cv_text:
             raise ValueError("Para adaptar el CV, primero tenes que pegar o subir un CV.")
+        if self.job_description and not self.cv_text:
+            raise ValueError("Para usar la descripcion del puesto, primero agrega tu CV.")
         if self.include_adapted_cv_draft and not self.include_cv_tailoring:
             raise ValueError("Para generar un borrador adaptado, activa la adaptacion del CV.")
         return self
@@ -100,6 +113,7 @@ class ReportListItem(BaseModel):
     valid_until: str | None = None
     used_cv: bool = False
     used_cv_tailoring: bool = False
+    used_job_description: bool = False
 
 
 class Pagination(BaseModel):

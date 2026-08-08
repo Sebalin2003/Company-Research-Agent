@@ -146,6 +146,8 @@ class RecordingCVTailoringService:
         company_name,
         signals,
         cv_evidence_lines,
+        job_signals,
+        job_evidence_lines,
         report,
         include_adapted_cv_draft,
     ):
@@ -154,6 +156,8 @@ class RecordingCVTailoringService:
                 "company_name": company_name,
                 "signals": signals,
                 "cv_evidence_lines": cv_evidence_lines,
+                "job_signals": job_signals,
+                "job_evidence_lines": job_evidence_lines,
                 "report": report,
                 "include_adapted_cv_draft": include_adapted_cv_draft,
             }

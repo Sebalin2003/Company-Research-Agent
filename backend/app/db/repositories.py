@@ -124,6 +124,20 @@ class ReportRepository:
         self.db.flush()
         return report
 
+    def fail_interrupted_reports(self, error_message: str) -> int:
+        reports = list(
+            self.db.scalars(
+                select(models.Report).where(
+                    models.Report.status.in_(
+                        [ReportStatus.pending.value, ReportStatus.running.value]
+                    )
+                )
+            )
+        )
+        for report in reports:
+            self.update_status(report, ReportStatus.failed, error_message)
+        return len(reports)
+
     def save_structured_report(
         self, report: models.Report, structured_report: StructuredReportSchema
     ) -> models.Report:
@@ -626,7 +640,7 @@ class ReportRepository:
         for index, suggestion in enumerate(tailoring.change_suggestions):
             self.db.add(
                 models.CVTailoringSuggestion(
-                    id=suggestion.id,
+                    id=scoped_report_id(profile.report_id, suggestion.id),
                     cv_tailoring_id=tailoring_model.id,
                     suggestion_type=suggestion.type.value,
                     original_text=suggestion.original_text,
@@ -696,11 +710,15 @@ class ReportRepository:
             return None
         tailoring = profile.cv_tailoring
         suggestions = sorted(tailoring.suggestions, key=lambda item: item.display_order)
+        suggestion_ids = {
+            suggestion.id: unscoped_report_id(report.id, suggestion.id)
+            for suggestion in suggestions
+        }
         return CVTailoringSchema(
             positioning_summary=tailoring.positioning_summary,
             change_suggestions=[
                 CVTailoringSuggestionSchema(
-                    id=suggestion.id,
+                    id=suggestion_ids[suggestion.id],
                     type=suggestion.suggestion_type,
                     original_text=suggestion.original_text,
                     suggested_text=suggestion.suggested_text,
@@ -715,10 +733,14 @@ class ReportRepository:
                 title="CV adaptado",
                 content_markdown=tailoring.adapted_cv_draft_markdown,
                 included_suggestion_ids=[
-                    suggestion.id for suggestion in suggestions if suggestion.included_in_draft
+                    suggestion_ids[suggestion.id]
+                    for suggestion in suggestions
+                    if suggestion.included_in_draft
                 ],
                 excluded_suggestion_ids=[
-                    suggestion.id for suggestion in suggestions if not suggestion.included_in_draft
+                    suggestion_ids[suggestion.id]
+                    for suggestion in suggestions
+                    if not suggestion.included_in_draft
                 ],
             )
             if tailoring.adapted_cv_draft_markdown
@@ -779,3 +801,8 @@ def safe_float_list(value: str | None) -> list[float]:
 def scoped_report_id(report_id: str, item_id: str) -> str:
     prefix = f"{report_id}_"
     return item_id if item_id.startswith(prefix) else f"{prefix}{item_id}"
+
+
+def unscoped_report_id(report_id: str, item_id: str) -> str:
+    prefix = f"{report_id}_"
+    return item_id.removeprefix(prefix)

@@ -8,6 +8,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from backend.app.domain.cv import CandidateSignals
+from backend.app.domain.jobs import JobSignals, job_signal_payload
 from backend.app.domain.reports import (
     AdaptedCVDraftSchema,
     CVTailoringSchema,
@@ -24,7 +25,8 @@ CV_TAILORING_SYSTEM_PROMPT = """\
 Sos un asistente de empleabilidad para Argentina.
 Devolve JSON valido compatible con el schema indicado.
 No inventes experiencia, empleadores, fechas, herramientas, certificaciones, idiomas, metricas ni logros.
-Cada sugerencia debe basarse en senales del CV, lineas seleccionadas del CV o evidencia del informe.
+Cada sugerencia debe basarse en senales del CV, lineas seleccionadas del CV, requisitos seleccionados del puesto o evidencia del informe.
+Un requisito del puesto que no aparece en el CV es una brecha a confirmar, no experiencia del candidato.
 Si algo requiere datos que el CV no prueba, usa add_only_if_true y requires_user_confirmation=true.
 El borrador adaptado no debe incluir sugerencias add_only_if_true ni hechos no verificados.
 Todo texto visible debe estar en espanol.
@@ -38,24 +40,31 @@ class GeminiCVTailoringService:
         model: str,
         client: Any | None = None,
         max_output_tokens: int = 4000,
+        timeout_ms: int = 60_000,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.client = client
         self.max_output_tokens = max_output_tokens
+        self.timeout_ms = timeout_ms
 
     def build(
         self,
         company_name: str,
         signals: CandidateSignals,
         cv_evidence_lines: list[str],
+        job_signals: JobSignals | None,
+        job_evidence_lines: list[str],
         report: StructuredReportSchema,
         include_adapted_cv_draft: bool,
     ) -> CVTailoringSchema:
         if not self.api_key:
             raise SynthesisError("GEMINI_API_KEY is required.")
 
-        client = self.client or genai.Client(api_key=self.api_key)
+        client = self.client or genai.Client(
+            api_key=self.api_key,
+            http_options=types.HttpOptions(timeout=self.timeout_ms),
+        )
         try:
             response = client.models.generate_content(
                 model=self.model,
@@ -63,6 +72,8 @@ class GeminiCVTailoringService:
                     company_name,
                     signals,
                     cv_evidence_lines,
+                    job_signals,
+                    job_evidence_lines,
                     report,
                     include_adapted_cv_draft,
                 ),
@@ -88,6 +99,8 @@ def build_cv_tailoring_prompt(
     company_name: str,
     signals: CandidateSignals,
     cv_evidence_lines: list[str],
+    job_signals: JobSignals | None,
+    job_evidence_lines: list[str],
     report: StructuredReportSchema,
     include_adapted_cv_draft: bool,
 ) -> str:
@@ -106,6 +119,8 @@ def build_cv_tailoring_prompt(
             "confidence": signals.confidence,
         },
         "selected_cv_lines": cv_evidence_lines,
+        "job_signals": job_signal_payload(job_signals) if job_signals else None,
+        "selected_job_lines": job_evidence_lines,
         "report_evidence": [
             {
                 "id": item.id,
@@ -119,7 +134,7 @@ def build_cv_tailoring_prompt(
         "adapted_draft_requested": include_adapted_cv_draft,
     }
     return (
-        "Genera sugerencias de adaptacion de CV seguras y accionables. "
+        "Genera sugerencias de adaptacion de CV seguras y accionables para la empresa y el puesto. "
         "Usa solo este contexto estructurado. "
         "Si no hay evidencia suficiente, se conservador y explica la limitacion en warnings. "
         f"{json.dumps(payload, ensure_ascii=False)}"

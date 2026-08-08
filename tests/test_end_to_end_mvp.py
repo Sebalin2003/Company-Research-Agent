@@ -45,6 +45,7 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         include_cv_tailoring: bool,
         include_adapted_cv_draft: bool,
         cv_text: str | None = None,
+        job_description: str | None = None,
     ) -> None:
         ResearchService(db_session).run_mock_generation(
             report_id=report_id,
@@ -52,6 +53,7 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
             include_cv_tailoring=include_cv_tailoring,
             include_adapted_cv_draft=include_adapted_cv_draft,
             cv_text=cv_text,
+            job_description=job_description,
         )
 
     app.dependency_overrides[get_db] = override_get_db
@@ -86,6 +88,11 @@ def test_mvp_frontend_api_cv_report_history_and_privacy_flow(client: TestClient)
             ),
             "include_cv_tailoring": True,
             "include_adapted_cv_draft": True,
+            "job_description": (
+                "Analista de datos junior.\n"
+                "Requisitos: SQL, Python y Power BI.\n"
+                "Responsabilidades: automatizar reportes."
+            ),
         },
     )
 
@@ -97,6 +104,7 @@ def test_mvp_frontend_api_cv_report_history_and_privacy_flow(client: TestClient)
     assert report_payload["language"] == "es-AR"
     assert report_payload["metadata"]["used_cv"] is True
     assert report_payload["metadata"]["used_cv_tailoring"] is True
+    assert report_payload["metadata"]["used_job_description"] is True
     assert report_payload["sources"][0]["url"].startswith("https://")
     assert report_payload["evidence"][0]["source_id"] == report_payload["sources"][0]["id"]
     assert report_payload["personalized_preparation"]["cv_profile"]["hard_skills"] == [
@@ -111,6 +119,7 @@ def test_mvp_frontend_api_cv_report_history_and_privacy_flow(client: TestClient)
     assert history["pagination"]["total"] == 1
     assert history["items"][0]["used_cv"] is True
     assert history["items"][0]["used_cv_tailoring"] is True
+    assert history["items"][0]["used_job_description"] is True
 
     deleted = client.delete(f"/api/reports/{report_payload['report_id']}/cv-data")
     assert deleted.status_code == 200

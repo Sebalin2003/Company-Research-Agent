@@ -12,13 +12,16 @@ def test_frontend_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=15" in response.text
-    assert "/static/styles.css?v=15" in response.text
+    assert "/static/app.js?v=18" in response.text
+    assert "/static/styles.css?v=18" in response.text
     assert "viewport-fit=cover" in response.text
     assert 'id="cvFile"' in response.text
     assert 'class="upload-control"' in response.text
     assert 'id="cvDisclosure"' in response.text
     assert 'id="cvTextDisclosure"' in response.text
+    assert 'id="jobDescription"' in response.text
+    assert 'maxlength="20000"' in response.text
+    assert 'id="jobDescriptionCount"' in response.text
     assert "Usar mi CV" in response.text
     assert 'id="includeTailoring" type="checkbox" disabled' in response.text
     assert 'id="includeDraft" type="checkbox" disabled' in response.text
@@ -57,6 +60,8 @@ def test_frontend_assets_are_served() -> None:
     assert ".report-view" in css_response.text
     assert "overflow-y: auto" in css_response.text
     assert ".history-list" in css_response.text
+    assert "grid-template-columns: minmax(0, 1fr) 44px" in css_response.text
+    assert "overflow-wrap: anywhere" in css_response.text
     assert "grid-template-rows: auto minmax(0, 1fr)" in css_response.text
     assert "scrollbar-width: thin" in css_response.text
     assert "--scroll-thumb:" in css_response.text
@@ -84,6 +89,8 @@ def test_frontend_assets_are_served() -> None:
     assert "active_report_pending_index" in js_response.text
     assert "Chat listo" in js_response.text
     assert ".meta-chip.rag-indexing" in css_response.text
+    assert "justify-self: center" in css_response.text
+    assert "showError(payload.error?.message || \"No se pudo generar el informe.\");\n        loadHistory();" in js_response.text
     assert ".report-nav" in css_response.text
     assert "position: sticky" in css_response.text
     assert ".evidence-section" in css_response.text
@@ -102,6 +109,11 @@ def test_frontend_assets_are_served() -> None:
     assert "Agregar solo si es cierto" in js_response.text
     assert "copyAdaptedDraft" in js_response.text
     assert "navigator.clipboard.writeText" in js_response.text
+    assert "job_description: jobDescription || null" in js_response.text
+    assert "used_job_description" in js_response.text
+    assert "updateJobDescriptionCount" in js_response.text
+    assert ".job-context" in css_response.text
+    assert ".meta-chip.cv-context" in css_response.text
     assert "reportStatusLabel" in js_response.text
     assert "Informe listo" in js_response.text
     assert "Preparando chat" in js_response.text

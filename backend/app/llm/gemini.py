@@ -5,12 +5,30 @@ from typing import Any
 
 from google import genai
 from google.genai import types
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from backend.app.core.time import utc_now
-from backend.app.domain.reports import StructuredReportSchema
-from backend.app.llm.prompts import SYSTEM_PROMPT, build_repair_prompt, build_report_user_prompt
+from backend.app.domain.reports import ClaimSchema, SectionSchema, StructuredReportSchema
+from backend.app.llm.prompts import (
+    SYSTEM_PROMPT,
+    build_compact_report_payload,
+    build_repair_prompt,
+    build_report_user_prompt,
+)
 from backend.app.llm.synthesizer import SynthesisError, SynthesisRequest
+from backend.app.services.report_quality import validate_and_strip_supporting_quotes
+
+
+class GeminiClaimSchema(ClaimSchema):
+    supporting_quote: str | None = None
+
+
+class GeminiSectionSchema(SectionSchema):
+    claims: list[GeminiClaimSchema] = Field(default_factory=list)
+
+
+class GeminiReportSchema(StructuredReportSchema):
+    sections: list[GeminiSectionSchema] = Field(default_factory=list)
 
 
 class GeminiReportSynthesizer:
@@ -20,17 +38,22 @@ class GeminiReportSynthesizer:
         model: str,
         client: Any | None = None,
         max_output_tokens: int = 8000,
+        timeout_ms: int = 60_000,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.client = client
         self.max_output_tokens = max_output_tokens
+        self.timeout_ms = timeout_ms
 
     def synthesize(self, request: SynthesisRequest) -> StructuredReportSchema:
         if not self.api_key:
             raise SynthesisError("GEMINI_API_KEY is required.")
 
-        client = self.client or genai.Client(api_key=self.api_key)
+        client = self.client or genai.Client(
+            api_key=self.api_key,
+            http_options=types.HttpOptions(timeout=self.timeout_ms),
+        )
         try:
             response = self.generate_content(client, build_report_user_prompt(request))
         except Exception as exc:
@@ -69,7 +92,7 @@ class GeminiReportSynthesizer:
                 temperature=0.2,
                 max_output_tokens=self.max_output_tokens,
                 response_mime_type="application/json",
-                response_schema=StructuredReportSchema,
+                response_schema=GeminiReportSchema,
             ),
         )
 
@@ -82,7 +105,11 @@ def validate_response(
     raw_report = parse_gemini_response(response)
     raw_report = normalize_report_payload(raw_report, request, model)
     try:
-        return StructuredReportSchema.model_validate(raw_report)
+        internal_report = GeminiReportSchema.model_validate(raw_report)
+        public_payload = validate_and_strip_supporting_quotes(
+            internal_report.model_dump(mode="json")
+        )
+        return StructuredReportSchema.model_validate(public_payload)
     except ValidationError as exc:
         raise SynthesisError("Gemini response did not match report schema.") from exc
 
@@ -198,19 +225,7 @@ def normalize_sources(raw_sources: Any, request: SynthesisRequest, accessed_at: 
 
 
 def normalize_evidence(raw_evidence: Any, request: SynthesisRequest) -> list[dict[str, Any]]:
-    if isinstance(raw_evidence, list) and raw_evidence:
-        return [item for item in raw_evidence if isinstance(item, dict)]
-    return [
-        {
-            "id": f"evidence_{index + 1}",
-            "source_id": item.source_id,
-            "topic": item.topic.value,
-            "claim": item.claim,
-            "raw_text_excerpt": item.raw_text_excerpt,
-            "confidence": item.confidence.value,
-        }
-        for index, item in enumerate(request.evidence)
-    ]
+    return build_compact_report_payload(request)["evidence"]
 
 
 def normalize_metadata(

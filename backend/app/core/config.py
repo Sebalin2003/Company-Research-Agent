@@ -16,6 +16,7 @@ class Settings:
     gemini_model: str = "gemini-3.1-flash-lite"
     gemini_embedding_model: str = "gemini-embedding-2"
     gemini_embedding_dimensions: int = 768
+    gemini_timeout_ms: int = 60_000
     search_provider: str = "mock"
     search_provider_api_key: str | None = None
     report_freshness_days: int = 30
@@ -47,6 +48,9 @@ def get_settings() -> Settings:
                 "GEMINI_EMBEDDING_DIMENSIONS",
                 str(Settings.gemini_embedding_dimensions),
             )
+        ),
+        gemini_timeout_ms=int(
+            os.getenv("GEMINI_TIMEOUT_MS", str(Settings.gemini_timeout_ms))
         ),
         search_provider=os.getenv("SEARCH_PROVIDER", Settings.search_provider),
         search_provider_api_key=os.getenv("SEARCH_PROVIDER_API_KEY") or os.getenv("TAVILY_API_KEY"),

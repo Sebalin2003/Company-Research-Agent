@@ -9,6 +9,7 @@ from backend.app.core.config import Settings
 from backend.app.core.time import utc_now
 from backend.app.db import models
 from backend.app.domain.cv import CandidateSignals, extract_candidate_signals, select_cv_evidence_lines
+from backend.app.domain.jobs import JobSignals, extract_job_signals, select_job_evidence_lines
 from backend.app.domain.reports import (
     ClaimSchema,
     ClaimType,
@@ -33,6 +34,7 @@ from backend.app.research.content_extractor import HttpContentExtractor
 from backend.app.research.pipeline import ResearchPipeline, ResearchPipelineResult
 from backend.app.research.search_provider import TavilySearchProvider
 from backend.app.services.cv_preparation import build_cv_tailoring, build_personalized_preparation
+from backend.app.services.report_quality import validate_report_grounding
 
 
 REQUIRED_REPORT_SECTIONS: tuple[tuple[SectionType, str, str], ...] = (
@@ -150,6 +152,7 @@ class ReportBuilder(Protocol):
         include_cv_tailoring: bool,
         include_adapted_cv_draft: bool,
         cv_text: str | None = None,
+        job_description: str | None = None,
     ) -> StructuredReportSchema:
         ...
 
@@ -165,6 +168,7 @@ class MockReportBuilder:
         include_cv_tailoring: bool,
         include_adapted_cv_draft: bool,
         cv_text: str | None = None,
+        job_description: str | None = None,
     ) -> StructuredReportSchema:
         now = utc_now()
         generated_at = now.isoformat()
@@ -230,11 +234,13 @@ class MockReportBuilder:
         ]
 
         personalized_preparation = None
+        job_signals = extract_job_signals(job_description) if job_description else None
         if include_cv:
             signals = extract_candidate_signals(cv_text or "")
             personalized_preparation = build_personalized_preparation(
                 signals=signals,
                 evidence_ids=["evidence_mock_001"],
+                job_signals=job_signals,
             )
 
         cv_tailoring = None
@@ -245,6 +251,7 @@ class MockReportBuilder:
                 company_name=report.company.name,
                 evidence_ids=["evidence_mock_001"],
                 include_adapted_cv_draft=include_adapted_cv_draft,
+                job_signals=job_signals,
             )
 
         return complete_report_sections(StructuredReportSchema(
@@ -267,6 +274,7 @@ class MockReportBuilder:
                 evidence_count=len(evidence),
                 used_cv=include_cv,
                 used_cv_tailoring=include_cv_tailoring,
+                used_job_description=bool(job_description),
                 generation_duration_ms=0,
             ),
         ))
@@ -292,6 +300,7 @@ class RealReportBuilder:
         include_cv_tailoring: bool,
         include_adapted_cv_draft: bool,
         cv_text: str | None = None,
+        job_description: str | None = None,
     ) -> StructuredReportSchema:
         build_started = time.perf_counter()
         research_result = self.research_pipeline.run(report.company.name)
@@ -329,11 +338,16 @@ class RealReportBuilder:
 
         personalized_preparation = None
         cv_tailoring = None
+        job_signals = extract_job_signals(job_description) if job_description else None
         if include_cv or include_cv_tailoring:
             signals = extract_candidate_signals(cv_text or "")
             evidence_ids = first_evidence_ids(synthesized)
             if include_cv and personalized_preparation is None:
-                personalized_preparation = build_personalized_preparation(signals, evidence_ids)
+                personalized_preparation = build_personalized_preparation(
+                    signals,
+                    evidence_ids,
+                    job_signals,
+                )
             if include_cv_tailoring:
                 cv_tailoring = self.build_ai_or_rule_cv_tailoring(
                     company_name=report.company.name,
@@ -342,6 +356,8 @@ class RealReportBuilder:
                     report=synthesized,
                     evidence_ids=evidence_ids,
                     include_adapted_cv_draft=include_adapted_cv_draft,
+                    job_signals=job_signals,
+                    job_description=job_description or "",
                 )
                 cv_tailoring = warn_if_cv_signals_are_weak(cv_tailoring, signals)
 
@@ -365,6 +381,7 @@ class RealReportBuilder:
                         "evidence_count": len(synthesized.evidence),
                         "used_cv": include_cv,
                         "used_cv_tailoring": include_cv_tailoring,
+                        "used_job_description": bool(job_description),
                         "generation_duration_ms": elapsed_ms(build_started),
                         "research_duration_ms": research_result.research_duration_ms,
                         "research_search_duration_ms": research_result.search_duration_ms,
@@ -378,7 +395,7 @@ class RealReportBuilder:
                 ),
             }
         )
-        return complete_report_sections(completed)
+        return validate_report_grounding(complete_report_sections(completed))
 
     def build_ai_or_rule_cv_tailoring(
         self,
@@ -388,12 +405,15 @@ class RealReportBuilder:
         report: StructuredReportSchema,
         evidence_ids: list[str],
         include_adapted_cv_draft: bool,
+        job_signals: JobSignals | None,
+        job_description: str,
     ):
         fallback = build_cv_tailoring(
             signals=signals,
             company_name=company_name,
             evidence_ids=evidence_ids,
             include_adapted_cv_draft=include_adapted_cv_draft,
+            job_signals=job_signals,
         )
         service = self.cv_tailoring_service or GeminiCVTailoringService(
             api_key=self.settings.gemini_api_key or "",
@@ -404,6 +424,12 @@ class RealReportBuilder:
                 company_name=company_name,
                 signals=signals,
                 cv_evidence_lines=select_cv_evidence_lines(cv_text, signals),
+                job_signals=job_signals,
+                job_evidence_lines=(
+                    select_job_evidence_lines(job_description, job_signals)
+                    if job_signals
+                    else []
+                ),
                 report=report,
                 include_adapted_cv_draft=include_adapted_cv_draft,
             )
@@ -435,10 +461,12 @@ def build_report_builder(settings: Settings) -> ReportBuilder:
         synthesizer = GeminiReportSynthesizer(
             api_key=settings.gemini_api_key or "",
             model=settings.gemini_model,
+            timeout_ms=settings.gemini_timeout_ms,
         )
         cv_tailoring_service = GeminiCVTailoringService(
             api_key=settings.gemini_api_key or "",
             model=settings.gemini_model,
+            timeout_ms=settings.gemini_timeout_ms,
         )
         return RealReportBuilder(settings, research_pipeline, synthesizer, cv_tailoring_service)
     raise ValueError(f"Search provider no soportado: {settings.search_provider}")

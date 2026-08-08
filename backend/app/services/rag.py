@@ -111,7 +111,10 @@ class GoogleEmbeddingService:
         if not texts:
             return []
 
-        client = self.client or genai.Client(api_key=self.settings.gemini_api_key)
+        client = self.client or genai.Client(
+            api_key=self.settings.gemini_api_key,
+            http_options=types.HttpOptions(timeout=self.settings.gemini_timeout_ms),
+        )
         vectors = []
         for index, text in enumerate(texts):
             if index:
@@ -205,7 +208,10 @@ class RAGChatService:
                 citations=[],
             )
 
-        client = self.client or genai.Client(api_key=self.settings.gemini_api_key)
+        client = self.client or genai.Client(
+            api_key=self.settings.gemini_api_key,
+            http_options=types.HttpOptions(timeout=self.settings.gemini_timeout_ms),
+        )
         try:
             response = client.models.generate_content(
                 model=self.settings.gemini_model,

@@ -54,6 +54,7 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         include_cv_tailoring: bool,
         include_adapted_cv_draft: bool,
         cv_text: str | None = None,
+        job_description: str | None = None,
     ) -> None:
         ResearchService(db_session).run_mock_generation(
             report_id=report_id,
@@ -61,6 +62,7 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
             include_cv_tailoring=include_cv_tailoring,
             include_adapted_cv_draft=include_adapted_cv_draft,
             cv_text=cv_text,
+            job_description=job_description,
         )
 
     app.dependency_overrides[get_db] = override_get_db
@@ -124,6 +126,57 @@ def test_cv_tailoring_without_cv_is_rejected(client: TestClient) -> None:
     assert "Para adaptar el CV" in response.text
 
 
+def test_job_description_requires_cv_and_respects_length_limit(client: TestClient) -> None:
+    without_cv = client.post(
+        "/api/research",
+        json={"company_name": "Acme", "job_description": "Requisito: Python."},
+    )
+    too_long = client.post(
+        "/api/research",
+        json={
+            "company_name": "Acme",
+            "cv_text": "Python.",
+            "job_description": "x" * 20_001,
+        },
+    )
+
+    assert without_cv.status_code == 422
+    assert "primero agrega tu CV" in without_cv.text
+    assert too_long.status_code == 422
+
+
+def test_job_description_personalizes_report_and_history(client: TestClient) -> None:
+    response = client.post(
+        "/api/research",
+        json={
+            "company_name": "Acme",
+            "cv_text": "Desarrollador con Python y SQL.",
+            "job_description": (
+                "Desarrollador backend junior.\n"
+                "Requisitos: Python, SQL y React.\n"
+                "Responsabilidades: desarrollar APIs."
+            ),
+            "include_cv_tailoring": True,
+            "include_adapted_cv_draft": True,
+        },
+    )
+
+    report_id = response.json()["report_id"]
+    report = client.get(f"/api/reports/{report_id}").json()["report"]
+    history = client.get("/api/reports").json()["items"][0]
+
+    assert report["metadata"]["used_job_description"] is True
+    assert "2 coincidencias" in report["personalized_preparation"]["fit_summary"]["summary"]
+    assert history["used_job_description"] is True
+    job_gap = next(
+        suggestion
+        for suggestion in report["cv_tailoring"]["change_suggestions"]
+        if suggestion["id"] == "tailoring_job_gap_if_true"
+    )
+    assert job_gap["requires_user_confirmation"] is True
+    assert job_gap["id"] in report["cv_tailoring"]["adapted_cv_draft"]["excluded_suggestion_ids"]
+
+
 def test_progress_message_does_not_claim_simulated_data() -> None:
     message = progress_message(ReportStatus.running)
 
@@ -132,7 +185,7 @@ def test_progress_message_does_not_claim_simulated_data() -> None:
 
 
 def test_failed_generation_message_does_not_claim_simulated_data(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     from backend.app.db.repositories import CompanyRepository, ReportRepository
 
@@ -149,12 +202,45 @@ def test_failed_generation_message_does_not_claim_simulated_data(
         lambda settings: FailingBuilder(),
     )
 
-    ResearchService(db_session).run_mock_generation(report.id, False, False, False)
+    with caplog.at_level("ERROR"):
+        ResearchService(db_session).run_mock_generation(
+            report.id,
+            False,
+            False,
+            False,
+            cv_text="PRIVATE_CV_TEXT",
+            job_description="PRIVATE_JOB_TEXT",
+        )
 
     failed_report = ReportRepository(db_session).get_by_id(report.id)
     assert failed_report.status == ReportStatus.failed
     assert failed_report.error_message is not None
     assert "simulado" not in failed_report.error_message
+    assert report.id in caplog.records[0].report_id
+    assert "boom" in caplog.text
+    assert "PRIVATE_CV_TEXT" not in caplog.text
+    assert "PRIVATE_JOB_TEXT" not in caplog.text
+
+
+def test_interrupted_reports_are_failed_without_changing_completed_reports(
+    db_session: Session,
+) -> None:
+    company = CompanyRepository(db_session).get_or_create("Acme")
+    pending = ReportRepository(db_session).create_report(company.id)
+    running = ReportRepository(db_session).create_report(company.id)
+    completed = ReportRepository(db_session).create_report(company.id)
+    ReportRepository(db_session).update_status(running, ReportStatus.running)
+    ReportRepository(db_session).update_status(completed, ReportStatus.completed)
+    db_session.commit()
+
+    count = ReportRepository(db_session).fail_interrupted_reports("Interrumpido")
+    db_session.commit()
+
+    assert count == 2
+    assert pending.status == ReportStatus.failed
+    assert running.status == ReportStatus.failed
+    assert completed.status == ReportStatus.completed
+    assert pending.error_message == "Interrumpido"
 
 
 def test_report_lists_include_saved_report_summary(client: TestClient) -> None:
@@ -170,8 +256,14 @@ def test_report_lists_include_saved_report_summary(client: TestClient) -> None:
 
 
 def test_repeated_reports_with_same_generated_ids_can_be_saved(client: TestClient) -> None:
-    first = client.post("/api/research", json={"company_name": "Acme"}).json()
-    second = client.post("/api/research", json={"company_name": "Acme"}).json()
+    request = {
+        "company_name": "Acme",
+        "cv_text": "Analista de datos con experiencia en SQL y reportes.",
+        "include_cv_tailoring": True,
+        "include_adapted_cv_draft": True,
+    }
+    first = client.post("/api/research", json=request).json()
+    second = client.post("/api/research", json=request).json()
 
     first_report = client.get(first["status_url"]).json()["report"]
     second_report = client.get(second["status_url"]).json()["report"]
@@ -181,6 +273,9 @@ def test_repeated_reports_with_same_generated_ids_can_be_saved(client: TestClien
     assert first_report["sources"][0]["id"] != second_report["sources"][0]["id"]
     assert first_report["evidence"][0]["source_id"] == first_report["sources"][0]["id"]
     assert second_report["evidence"][0]["source_id"] == second_report["sources"][0]["id"]
+    assert first_report["cv_tailoring"]["change_suggestions"][0]["id"] == (
+        second_report["cv_tailoring"]["change_suggestions"][0]["id"]
+    )
 
 
 def test_delete_cv_data_removes_personalized_sections(client: TestClient) -> None:

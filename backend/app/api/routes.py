@@ -98,6 +98,7 @@ def create_research_request(
         request.include_cv_tailoring,
         request.include_adapted_cv_draft,
         request.cv_text,
+        request.job_description,
     )
 
     return ResearchAcceptedResponse(
@@ -438,6 +439,7 @@ def report_list_item(report: models.Report) -> ReportListItem:
         valid_until=report.valid_until.isoformat() if report.valid_until else None,
         used_cv=bool(metadata.get("used_cv", False)),
         used_cv_tailoring=bool(metadata.get("used_cv_tailoring", False)),
+        used_job_description=bool(metadata.get("used_job_description", False)),
     )
 
 

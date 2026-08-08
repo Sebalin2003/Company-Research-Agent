@@ -727,7 +727,7 @@ button:focus-visible {
   border-radius: var(--radius-sm);
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 44px;
   padding: 9px;
   text-align: left;
   transition:
@@ -746,7 +746,9 @@ button:focus-visible {
   color: inherit;
   display: grid;
   gap: 5px;
+  inline-size: 100%;
   min-width: 0;
+  overflow: hidden;
   padding: 0;
   text-align: left;
 }
@@ -758,6 +760,8 @@ button:focus-visible {
 .history-item span {
   color: var(--muted);
   font-size: 0.82rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .history-delete {
@@ -1175,6 +1179,32 @@ body {
   padding: var(--space-md);
 }
 
+.job-context {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: var(--space-sm);
+  padding-top: var(--space-md);
+}
+
+.job-context textarea {
+  min-height: 132px;
+  resize: vertical;
+}
+
+.field-meta {
+  align-items: start;
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: space-between;
+}
+
+.character-count {
+  color: var(--subtle);
+  flex: 0 0 auto;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .toggle-row {
   min-height: 52px;
 }
@@ -1256,7 +1286,10 @@ details > summary:focus-visible,
 }
 
 .loading-state small {
+  justify-self: center;
   max-width: 42ch;
+  text-align: center;
+  width: 100%;
 }
 
 .error-state .secondary-button {
@@ -1339,6 +1372,11 @@ details > summary:focus-visible,
 .status-badge.success {
   background: oklch(0.93 0.045 150);
   color: oklch(0.34 0.1 150);
+}
+
+.meta-chip.cv-context {
+  background: var(--cv-soft);
+  color: oklch(0.38 0.12 285);
 }
 
 .technical-details {
@@ -1822,6 +1860,11 @@ details > summary:focus-visible,
 
   .chat-toggle {
     width: 100%;
+  }
+
+  .field-meta {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

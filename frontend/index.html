@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Radar Laboral</title>
-    <link rel="stylesheet" href="/static/styles.css?v=15" />
+    <link rel="stylesheet" href="/static/styles.css?v=18" />
   </head>
   <body>
     <div class="app-shell">
@@ -67,7 +67,24 @@
                     ></textarea>
                   </label>
                 </details>
-                <span class="field-note">Solo se usan se&ntilde;ales del CV para preparar recomendaciones. Revis&aacute; siempre las sugerencias antes de usarlas.</span>
+                <div class="job-context">
+                  <label>
+                    Descripci&oacute;n del puesto
+                    <textarea
+                      id="jobDescription"
+                      name="jobDescription"
+                      rows="6"
+                      maxlength="20000"
+                      aria-describedby="jobDescriptionHelp jobDescriptionCount"
+                      placeholder="Peg&aacute; los requisitos y responsabilidades de la vacante."
+                    ></textarea>
+                  </label>
+                  <div class="field-meta">
+                    <span class="field-note" id="jobDescriptionHelp">Opcional. Se usa para comparar el puesto con tu CV.</span>
+                    <span class="character-count" id="jobDescriptionCount">0 / 20.000</span>
+                  </div>
+                </div>
+                <span class="field-note">Solo se usan se&ntilde;ales seleccionadas del CV y del puesto. Revis&aacute; siempre las sugerencias antes de usarlas.</span>
               </div>
             </details>
 
@@ -80,7 +97,7 @@
                   <input id="includeTailoring" type="checkbox" disabled />
                   <span>
                     <strong>Sugerir cambios asistidos por IA</strong>
-                    <small>Compara tu experiencia con la evidencia de la empresa.</small>
+                    <small>Compara tu experiencia con la empresa y el puesto.</small>
                   </span>
                 </label>
                 <label class="toggle-row nested-option">
@@ -154,6 +171,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=15" defer></script>
+    <script src="/static/app.js?v=18" defer></script>
   </body>
 </html>

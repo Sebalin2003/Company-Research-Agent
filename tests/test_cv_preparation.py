@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from backend.app.domain.cv import extract_candidate_signals, select_cv_evidence_lines
+from backend.app.domain.jobs import extract_job_signals, select_job_evidence_lines
 from backend.app.services.cv_preparation import build_cv_tailoring, build_personalized_preparation
 
 
@@ -76,3 +77,56 @@ def test_cv_tailoring_keeps_unverified_metrics_out_of_draft() -> None:
     assert add_if_true.id in tailoring.adapted_cv_draft.excluded_suggestion_ids
     assert add_if_true.id not in tailoring.adapted_cv_draft.included_suggestion_ids
     assert "Agrega metricas" not in tailoring.adapted_cv_draft.content_markdown
+
+
+def test_job_signals_improve_preparation_and_keep_gaps_unverified() -> None:
+    cv_signals = extract_candidate_signals("Desarrollador con Python y SQL.")
+    job_text = """
+    Desarrollador backend junior.
+    Requisitos: Python, SQL y React.
+    Responsabilidades: desarrollar APIs y mantener servicios.
+    """
+    job_signals = extract_job_signals(job_text)
+
+    preparation = build_personalized_preparation(
+        cv_signals,
+        ["evidence_1"],
+        job_signals,
+    )
+    tailoring = build_cv_tailoring(
+        signals=cv_signals,
+        company_name="Acme",
+        evidence_ids=["evidence_1"],
+        include_adapted_cv_draft=True,
+        job_signals=job_signals,
+    )
+
+    assert job_signals.role == "desarrollador"
+    assert job_signals.seniority == "junior"
+    assert job_signals.hard_skills == ["python", "sql", "react"]
+    assert "2 coincidencias" in preparation.fit_summary.summary
+    assert "react" in preparation.gaps_to_prepare[0].text.lower()
+    job_gap = next(
+        suggestion
+        for suggestion in tailoring.change_suggestions
+        if suggestion.id == "tailoring_job_gap_if_true"
+    )
+    assert job_gap.requires_user_confirmation is True
+    assert tailoring.adapted_cv_draft is not None
+    assert job_gap.id in tailoring.adapted_cv_draft.excluded_suggestion_ids
+
+
+def test_job_evidence_selection_excludes_unrelated_lines() -> None:
+    job_text = """
+    Desarrollador backend.
+    Requisitos: Python y SQL.
+    Texto interno sin relacion con el puesto.
+    Responsabilidades: mantener APIs.
+    """
+    signals = extract_job_signals(job_text)
+
+    lines = select_job_evidence_lines(job_text, signals)
+
+    assert "Requisitos: Python y SQL." in lines
+    assert "Responsabilidades: mantener APIs." in lines
+    assert "Texto interno sin relacion con el puesto." not in lines

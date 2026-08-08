@@ -10,15 +10,32 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.errors import register_error_handlers
 from backend.app.api.routes import router
+from backend.app.db.repositories import ReportRepository
+from backend.app.db.session import SessionLocal
 from backend.app.db.session import init_db
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
+INTERRUPTED_REPORT_MESSAGE = (
+    "La investigaci\u00f3n fue interrumpida por un reinicio. "
+    "Volv\u00e9 a intentarlo."
+)
+
+
+def recover_interrupted_reports() -> int:
+    db = SessionLocal()
+    try:
+        count = ReportRepository(db).fail_interrupted_reports(INTERRUPTED_REPORT_MESSAGE)
+        db.commit()
+        return count
+    finally:
+        db.close()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
+    recover_interrupted_reports()
     yield
 
 

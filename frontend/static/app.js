@@ -15,6 +15,8 @@ const els = {
   cvFileName: document.querySelector("#cvFileName"),
   cvFileStatus: document.querySelector("#cvFileStatus"),
   cvText: document.querySelector("#cvText"),
+  jobDescription: document.querySelector("#jobDescription"),
+  jobDescriptionCount: document.querySelector("#jobDescriptionCount"),
   cvDisclosure: document.querySelector("#cvDisclosure"),
   cvTextDisclosure: document.querySelector("#cvTextDisclosure"),
   chatForm: document.querySelector("#chatForm"),
@@ -45,6 +47,7 @@ const els = {
 els.form.addEventListener("submit", handleSubmit);
 els.cvFile.addEventListener("change", handleCvUpload);
 els.cvText.addEventListener("input", updateCvControls);
+els.jobDescription.addEventListener("input", updateJobDescriptionCount);
 els.chatForm.addEventListener("submit", handleChatSubmit);
 els.chatToggle.addEventListener("click", () => setChatExpanded(!state.chatExpanded));
 els.clearButton.addEventListener("click", clearForm);
@@ -66,13 +69,16 @@ els.includeTailoring.addEventListener("change", () => {
 loadHistory();
 updateChatState();
 updateCvControls();
+updateJobDescriptionCount();
 
 async function handleSubmit(event) {
   event.preventDefault();
   const cvText = els.cvText.value.trim();
+  const jobDescription = els.jobDescription.value.trim();
   const payload = {
     company_name: els.companyName.value.trim(),
     cv_text: cvText || null,
+    job_description: jobDescription || null,
     include_cv_tailoring: els.includeTailoring.checked,
     include_adapted_cv_draft: els.includeDraft.checked,
   };
@@ -85,6 +91,13 @@ async function handleSubmit(event) {
   if (payload.include_cv_tailoring && !payload.cv_text) {
     showFormError("Sub\u00ed o peg\u00e1 tu CV para activar las sugerencias.");
     els.cvDisclosure.open = true;
+    return;
+  }
+  if (payload.job_description && !payload.cv_text) {
+    showFormError("Agreg\u00e1 tu CV para comparar el puesto.");
+    els.cvDisclosure.open = true;
+    els.cvTextDisclosure.open = true;
+    els.cvText.focus();
     return;
   }
 
@@ -154,6 +167,7 @@ async function pollReport(statusUrl) {
         clearPoll();
         setBusy(false);
         showError(payload.error?.message || "No se pudo generar el informe.");
+        loadHistory();
         return;
       }
       showLoading(
@@ -227,6 +241,7 @@ function renderReport(report) {
         ${chip(`Fuentes: ${report.metadata.source_count}`)}
         ${chip(`Hallazgos: ${report.metadata.evidence_count}`)}
         ${chip(report.metadata.used_cv ? "Con CV" : "Sin CV")}
+        ${report.metadata.used_job_description ? chip("Con puesto", "cv-context") : ""}
         ${incompleteSections ? chip(`${incompleteSections} secciones con evidencia limitada`, "warning") : chip("Evidencia suficiente", "success")}
         ${renderRagStatusChip(report.metadata)}
       </div>
@@ -563,7 +578,7 @@ function renderHistory(items) {
     <article class="history-item ${state.currentReportId === item.report_id ? "selected" : ""}">
       <button class="history-open" type="button" data-report-id="${escapeAttribute(item.report_id)}">
         <strong>${escapeHtml(item.company.name)}</strong>
-        <span>${reportStatusLabel(item.status)}${item.used_cv ? " &middot; con CV" : ""}${item.generated_at ? ` &middot; ${formatShortDate(item.generated_at)}` : ""}</span>
+        <span>${reportStatusLabel(item.status)}${item.used_cv ? " &middot; con CV" : ""}${item.used_job_description ? " &middot; con puesto" : ""}${item.generated_at ? ` &middot; ${formatShortDate(item.generated_at)}` : ""}</span>
         ${item.summary ? `<span>${escapeHtml(item.summary)}</span>` : ""}
       </button>
       <button class="history-delete" type="button" data-delete-report-id="${escapeAttribute(item.report_id)}" aria-label="Eliminar informe de ${escapeAttribute(item.company.name)}" title="Eliminar informe">&#128465;</button>
@@ -684,6 +699,7 @@ function clearForm() {
   els.cvFileStatus.textContent = "Ning\u00fan archivo seleccionado.";
   hideFormError();
   updateCvControls();
+  updateJobDescriptionCount();
   clearPoll();
   setBusy(false);
   clearCurrentReport();
@@ -787,6 +803,11 @@ function updateCvControls() {
   if (disclosureAction) {
     disclosureAction.textContent = hasCv ? "CV listo" : "Agregar";
   }
+}
+
+function updateJobDescriptionCount() {
+  const count = els.jobDescription.value.length;
+  els.jobDescriptionCount.textContent = `${new Intl.NumberFormat("es-AR").format(count)} / 20.000`;
 }
 
 function showFormError(message) {

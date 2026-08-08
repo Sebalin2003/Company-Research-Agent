@@ -218,6 +218,7 @@ class ReportMetadataSchema(BaseModel):
     evidence_count: int = 0
     used_cv: bool = False
     used_cv_tailoring: bool = False
+    used_job_description: bool = False
     generation_duration_ms: int | None = None
     rag_index_status: str = "pending"
     rag_indexed_chunk_count: int = 0

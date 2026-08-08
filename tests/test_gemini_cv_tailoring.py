@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.domain.cv import extract_candidate_signals, select_cv_evidence_lines
+from backend.app.domain.jobs import extract_job_signals, select_job_evidence_lines
 from backend.app.domain.reports import (
     CompanySchema,
     ConfidenceLevel,
@@ -52,6 +53,8 @@ def test_gemini_cv_tailoring_returns_structured_suggestions() -> None:
         company_name="Acme",
         signals=extract_candidate_signals("Desarrollador con Python y SQL. Optimice APIs."),
         cv_evidence_lines=["Desarrollador con Python y SQL.", "Optimice APIs."],
+        job_signals=None,
+        job_evidence_lines=[],
         report=sample_report(),
         include_adapted_cv_draft=True,
     )
@@ -77,6 +80,8 @@ def test_gemini_cv_tailoring_rejects_invalid_output() -> None:
             company_name="Acme",
             signals=extract_candidate_signals("Python y SQL."),
             cv_evidence_lines=["Python y SQL."],
+            job_signals=None,
+            job_evidence_lines=[],
             report=sample_report(),
             include_adapted_cv_draft=False,
         )
@@ -95,6 +100,8 @@ def test_cv_tailoring_prompt_uses_selected_cv_lines_not_full_cv_text() -> None:
         company_name="Acme",
         signals=signals,
         cv_evidence_lines=selected_lines,
+        job_signals=None,
+        job_evidence_lines=[],
         report=sample_report(),
         include_adapted_cv_draft=False,
     )
@@ -102,6 +109,31 @@ def test_cv_tailoring_prompt_uses_selected_cv_lines_not_full_cv_text() -> None:
     assert "Desarrollador con Python y SQL" in prompt
     assert "Optimice APIs internas" in prompt
     assert "Experiencia privada que no debe enviarse completa" not in prompt
+
+
+def test_cv_tailoring_prompt_uses_selected_job_lines_not_full_description() -> None:
+    job_description = """
+    Desarrollador backend.
+    Requisito: Python y SQL.
+    Informacion interna que no debe enviarse completa.
+    Responsabilidades: optimizar APIs.
+    """
+    job_signals = extract_job_signals(job_description)
+    selected_lines = select_job_evidence_lines(job_description, job_signals)
+
+    prompt = build_cv_tailoring_prompt(
+        company_name="Acme",
+        signals=extract_candidate_signals("Desarrollador con Python."),
+        cv_evidence_lines=["Desarrollador con Python."],
+        job_signals=job_signals,
+        job_evidence_lines=selected_lines,
+        report=sample_report(),
+        include_adapted_cv_draft=False,
+    )
+
+    assert "Requisito: Python y SQL" in prompt
+    assert "Responsabilidades: optimizar APIs" in prompt
+    assert "Informacion interna que no debe enviarse completa" not in prompt
 
 
 def sample_report() -> StructuredReportSchema:

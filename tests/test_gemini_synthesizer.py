@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from backend.app.domain.reports import (
     ReportStatus,
     SectionType,
     SourceType,
+    StructuredReportSchema,
 )
 from backend.app.llm.gemini import GeminiReportSynthesizer
 from backend.app.llm.prompts import SYSTEM_PROMPT
@@ -56,11 +58,147 @@ def test_gemini_synthesizer_sends_structured_output_request() -> None:
     assert call["model"] == "gemini-test-model"
     assert call["config"].response_mime_type == "application/json"
     assert call["config"].max_output_tokens == 8000
+    assert "supporting_quote" in json.dumps(
+        call["config"].response_schema.model_json_schema()
+    )
     assert report.status == ReportStatus.completed
     assert report.sections[0].type == SectionType.executive_summary
     assert report.sections[0].claims[0].type == ClaimType.fact
     assert report.metadata.llm_provider == "gemini"
     assert report.metadata.llm_model == "gemini-test-model"
+    assert "supporting_quote" not in report.model_dump_json()
+    assert "supporting_quote" not in json.dumps(StructuredReportSchema.model_json_schema())
+
+
+def test_gemini_synthesizer_accepts_normalized_supporting_quote() -> None:
+    payload = valid_report_payload()
+    payload["sections"][0]["claims"][0]["supporting_quote"] = (
+        "Acme\u00a0 fabrica   productos industriales."
+    )
+    client = FakeClient(response=SimpleNamespace(text=json.dumps(payload)))
+
+    report = GeminiReportSynthesizer(
+        api_key="test-key", model="gemini-test-model", client=client
+    ).synthesize(synthesis_request())
+
+    assert report.sections[0].confidence == ConfidenceLevel.medium
+    assert report.sections[0].missing_evidence is False
+
+
+@pytest.mark.parametrize(
+    "supporting_quote",
+    [None, "Acme presta servicios financieros.", "x" * 451],
+)
+def test_invalid_supporting_quote_downgrades_without_repair(supporting_quote) -> None:
+    payload = valid_report_payload()
+    claim = payload["sections"][0]["claims"][0]
+    if supporting_quote is None:
+        claim.pop("supporting_quote")
+    else:
+        claim["supporting_quote"] = supporting_quote
+    client = FakeClient(response=SimpleNamespace(text=json.dumps(payload)))
+
+    report = GeminiReportSynthesizer(
+        api_key="test-key", model="gemini-test-model", client=client
+    ).synthesize(synthesis_request())
+
+    assert len(client.models.calls) == 1
+    assert report.sections[0].confidence == ConfidenceLevel.low
+    assert report.sections[0].claims[0].confidence == ConfidenceLevel.low
+    assert report.sections[0].missing_evidence is True
+    assert any(
+        warning.type == "supporting_quote_validation_failed"
+        for warning in report.warnings
+    )
+
+
+def test_quote_validation_uses_original_evidence_and_checks_topic() -> None:
+    payload = valid_report_payload()
+    payload["evidence"][0]["raw_text_excerpt"] = "Texto inventado por el modelo."
+    payload["sections"][0]["type"] = "employees"
+
+    report = GeminiReportSynthesizer(
+        api_key="test-key",
+        model="gemini-test-model",
+        client=FakeClient(response=SimpleNamespace(text=json.dumps(payload))),
+    ).synthesize(synthesis_request())
+
+    assert report.evidence[0].raw_text_excerpt == "Acme fabrica productos industriales."
+    assert report.sections[0].confidence == ConfidenceLevel.low
+    assert report.sections[0].missing_evidence is True
+
+
+def test_quote_found_only_in_uncited_evidence_is_rejected() -> None:
+    request = synthesis_request()
+    uncited_quote = "Acme tambien presta servicios de consultoria especializada global."
+    request.evidence.append(
+        ClassifiedEvidence(
+            source_id="source_1",
+            topic=EvidenceTopic.business,
+            claim=uncited_quote,
+            raw_text_excerpt=uncited_quote,
+            confidence=ConfidenceLevel.medium,
+        )
+    )
+    payload = valid_report_payload()
+    payload["sections"][0]["claims"][0]["supporting_quote"] = uncited_quote
+
+    report = GeminiReportSynthesizer(
+        api_key="test-key",
+        model="gemini-test-model",
+        client=FakeClient(response=SimpleNamespace(text=json.dumps(payload))),
+    ).synthesize(request)
+
+    assert report.sections[0].claims[0].confidence == ConfidenceLevel.low
+    assert report.sections[0].missing_evidence is True
+
+
+def test_invalid_quote_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    payload = valid_report_payload()
+    private_quote = "Texto privado que no pertenece a la evidencia."
+    payload["sections"][0]["claims"][0]["supporting_quote"] = private_quote
+
+    with caplog.at_level(logging.WARNING):
+        GeminiReportSynthesizer(
+            api_key="test-key",
+            model="gemini-test-model",
+            client=FakeClient(response=SimpleNamespace(text=json.dumps(payload))),
+        ).synthesize(synthesis_request())
+
+    assert "Supporting quote validation failed" in caplog.text
+    assert private_quote not in caplog.text
+
+
+def test_quote_must_contain_claim_numbers() -> None:
+    payload = valid_report_payload()
+    payload["sections"][0]["claims"][0]["text"] = (
+        "Acme fabrica 20 productos industriales."
+    )
+
+    report = GeminiReportSynthesizer(
+        api_key="test-key",
+        model="gemini-test-model",
+        client=FakeClient(response=SimpleNamespace(text=json.dumps(payload))),
+    ).synthesize(synthesis_request())
+
+    assert report.sections[0].claims[0].confidence == ConfidenceLevel.low
+    assert report.sections[0].missing_evidence is True
+
+
+def test_recommendation_claim_does_not_require_supporting_quote() -> None:
+    payload = valid_report_payload()
+    claim = payload["sections"][0]["claims"][0]
+    claim["type"] = "recommendation"
+    claim.pop("supporting_quote")
+
+    report = GeminiReportSynthesizer(
+        api_key="test-key",
+        model="gemini-test-model",
+        client=FakeClient(response=SimpleNamespace(text=json.dumps(payload))),
+    ).synthesize(synthesis_request())
+
+    assert report.sections[0].confidence == ConfidenceLevel.medium
+    assert report.sections[0].missing_evidence is False
 
 
 def test_gemini_synthesizer_accepts_fenced_json_content() -> None:
@@ -149,6 +287,8 @@ def test_report_prompt_requires_exact_details_or_unavailable_language() -> None:
     assert "IT trainee, pasantia/internship y junior" in prompt
     assert "no infieras rangos salariales" in SYSTEM_PROMPT
     assert "trainee, pasantia/internship y junior" in SYSTEM_PROMPT
+    assert "supporting_quote" in prompt
+    assert "supporting_quote" in SYSTEM_PROMPT
 
 
 def test_gemini_synthesizer_repairs_invalid_first_response() -> None:
@@ -338,6 +478,7 @@ def valid_report_payload() -> dict:
                         "text": "Acme fabrica productos industriales.",
                         "evidence_ids": ["evidence_1"],
                         "confidence": "medium",
+                        "supporting_quote": "Acme fabrica productos industriales.",
                     }
                 ],
                 "confidence": "medium",
