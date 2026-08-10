@@ -12,8 +12,8 @@ def test_frontend_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=18" in response.text
-    assert "/static/styles.css?v=18" in response.text
+    assert "/static/app.js?v=23" in response.text
+    assert "/static/styles.css?v=20" in response.text
     assert "viewport-fit=cover" in response.text
     assert 'id="cvFile"' in response.text
     assert 'class="upload-control"' in response.text
@@ -102,9 +102,11 @@ def test_frontend_assets_are_served() -> None:
     assert "renderClaimMeta" not in js_response.text
     assert "Evidencia:" not in js_response.text
     assert "renderReportNavigation" in js_response.text
-    assert "renderSectionClaims" in js_response.text
+    assert "renderSectionClaims" not in js_response.text
+    assert "Ver evidencia y criterios" not in js_response.text
     assert "confidenceBadge" in js_response.text
     assert "Evidencia limitada" in js_response.text
+    assert "Informaci\\u00f3n parcial" not in js_response.text
     assert "Sugerencias asistidas por IA" in js_response.text
     assert "Agregar solo si es cierto" in js_response.text
     assert "copyAdaptedDraft" in js_response.text

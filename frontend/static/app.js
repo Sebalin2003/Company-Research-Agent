@@ -330,43 +330,8 @@ function renderSection(section, citationIndex, warnings) {
       </div>
       <p>${escapeHtml(section.summary)}</p>
       ${renderSectionCitations(section, citationIndex)}
-      ${renderSectionClaims(section.claims || [], citationIndex)}
       ${renderWarnings(sectionWarnings)}
     </section>
-  `;
-}
-
-function renderSectionClaims(claims, citationIndex) {
-  if (!claims.length) {
-    return "";
-  }
-  return `
-    <details class="evidence-details">
-      <summary>Ver evidencia y criterios (${claims.length})</summary>
-      <ul class="claim-list detailed-claims">
-        ${claims.map((claim) => {
-          const citations = (claim.evidence_ids || [])
-            .map((evidenceId) => citationIndex.get(evidenceId))
-            .filter(Boolean);
-          return `
-            <li>
-              <div class="claim-heading">
-                <span class="claim-type">${claimTypeLabel(claim.type)}</span>
-                ${confidenceBadge(claim.confidence)}
-              </div>
-              <p>${escapeHtml(claim.text)}</p>
-              ${
-                citations.length
-                  ? `<div class="citation-list">${citations.map((citation) => `
-                      <a href="${escapeAttribute(citation.url)}" target="_blank" rel="noreferrer">${escapeHtml(citation.title)}</a>
-                    `).join("")}</div>`
-                  : `<small>Sin una fuente directa asociada.</small>`
-              }
-            </li>
-          `;
-        }).join("")}
-      </ul>
-    </details>
   `;
 }
 
@@ -540,7 +505,7 @@ function renderWarnings(warnings, options = {}) {
     <div class="warning-list" aria-label="Advertencias">
       ${visibleWarnings.map((warning) => `
         <div class="warning-item severity-${escapeAttribute(warning.severity || "medium")}">
-          <strong>${warningSeverityLabel(warning.severity)}</strong>
+          ${warningSeverityLabel(warning.severity) ? `<strong>${warningSeverityLabel(warning.severity)}</strong>` : ""}
           <p>${escapeHtml(warning.message)}</p>
         </div>
       `).join("")}
@@ -988,10 +953,10 @@ function suggestionTypeLabel(value) {
 function warningSeverityLabel(value) {
   const labels = {
     high: "Revisi\u00f3n necesaria",
-    medium: "Ten\u00e9 en cuenta",
+    medium: "",
     low: "Nota",
   };
-  return labels[value] || labels.medium;
+  return labels[value] ?? labels.medium;
 }
 
 function reportStatusLabel(value) {

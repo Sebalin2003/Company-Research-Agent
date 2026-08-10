@@ -748,7 +748,6 @@ button:focus-visible {
   gap: 5px;
   inline-size: 100%;
   min-width: 0;
-  overflow: hidden;
   padding: 0;
   text-align: left;
 }
@@ -1110,16 +1109,14 @@ body {
 
 .cv-disclosure > summary,
 .cv-text-disclosure > summary,
-.technical-details > summary,
-.evidence-details > summary {
+.technical-details > summary {
   cursor: pointer;
   list-style: none;
 }
 
 .cv-disclosure > summary::-webkit-details-marker,
 .cv-text-disclosure > summary::-webkit-details-marker,
-.technical-details > summary::-webkit-details-marker,
-.evidence-details > summary::-webkit-details-marker {
+.technical-details > summary::-webkit-details-marker {
   display: none;
 }
 
@@ -1352,7 +1349,6 @@ details > summary:focus-visible,
 .confidence-badge,
 .status-badge,
 .suggestion-type,
-.claim-type,
 .review-label {
   border-radius: 999px;
   display: inline-flex;
@@ -1472,7 +1468,6 @@ details > summary:focus-visible,
 }
 
 .evidence-status,
-.claim-heading,
 .suggestion-meta {
   align-items: center;
   display: flex;
@@ -1500,32 +1495,6 @@ details > summary:focus-visible,
   margin-top: 0;
 }
 
-.evidence-details {
-  margin-top: var(--space-xs);
-}
-
-.evidence-details > summary {
-  color: var(--accent-strong);
-  font-size: 0.84rem;
-  font-weight: 720;
-  width: fit-content;
-}
-
-.detailed-claims {
-  margin-top: var(--space-md);
-}
-
-.detailed-claims li {
-  background: var(--surface-2);
-  border: 0;
-}
-
-.detailed-claims p {
-  color: var(--ink);
-  font-size: 0.92rem;
-}
-
-.claim-type,
 .suggestion-type {
   background: var(--surface-3);
   color: var(--muted);
@@ -1731,10 +1700,6 @@ details > summary:focus-visible,
   color: var(--danger);
 }
 
-.history-item {
-  min-height: 76px;
-}
-
 .history-item.selected {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -1871,8 +1836,7 @@ details > summary:focus-visible,
 @media (pointer: coarse) {
   .report-nav a,
   .cv-disclosure > summary,
-  .cv-text-disclosure > summary,
-  .evidence-details > summary {
+  .cv-text-disclosure > summary {
     min-height: 44px;
   }
 }
