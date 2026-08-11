@@ -495,9 +495,10 @@ function renderSources(sources) {
 }
 
 function renderWarnings(warnings, options = {}) {
-  const visibleWarnings = options.globalOnly
+  const scopedWarnings = options.globalOnly
     ? warnings.filter((warning) => !warning.related_section)
     : warnings;
+  const visibleWarnings = scopedWarnings.filter((warning) => warning.severity === "high");
   if (!visibleWarnings.length) {
     return "";
   }
@@ -724,10 +725,12 @@ function scopeLabelText(scope) {
 }
 
 function showLoading(message, companyName = "") {
-  hideAllStates();
+  if (els.loadingState.classList.contains("hidden")) {
+    hideAllStates();
+    els.loadingState.classList.remove("hidden");
+  }
   els.loadingMessage.textContent = message;
   els.loadingCompany.textContent = companyName || "";
-  els.loadingState.classList.remove("hidden");
   els.connectionStatus.textContent = "Investigando";
 }
 

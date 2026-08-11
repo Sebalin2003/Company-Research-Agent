@@ -12,7 +12,7 @@ def test_frontend_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=23" in response.text
+    assert "/static/app.js?v=26" in response.text
     assert "/static/styles.css?v=20" in response.text
     assert "viewport-fit=cover" in response.text
     assert 'id="cvFile"' in response.text
@@ -111,6 +111,7 @@ def test_frontend_assets_are_served() -> None:
     assert "Agregar solo si es cierto" in js_response.text
     assert "copyAdaptedDraft" in js_response.text
     assert "navigator.clipboard.writeText" in js_response.text
+    assert "if (els.loadingState.classList.contains(\"hidden\"))" in js_response.text
     assert "job_description: jobDescription || null" in js_response.text
     assert "used_job_description" in js_response.text
     assert "updateJobDescriptionCount" in js_response.text
