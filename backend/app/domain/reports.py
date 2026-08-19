@@ -212,7 +212,7 @@ class CVTailoringSchema(BaseModel):
 
 class ReportMetadataSchema(BaseModel):
     search_provider: str
-    llm_provider: str = "gemini"
+    llm_provider: str = "deepseek"
     llm_model: str
     source_count: int = 0
     evidence_count: int = 0

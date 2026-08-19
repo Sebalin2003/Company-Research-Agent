@@ -74,9 +74,11 @@ def test_mvp_frontend_api_cv_report_history_and_privacy_flow(client: TestClient)
     assert "Radar Laboral" in page.text
     assert "viewport" in page.text
     assert script.status_code == 200
-    assert "include_adapted_cv_draft" in script.text
+    assert '"/api/reports?limit=20"' in script.text
+    assert '"/api/conversations"' in script.text
+    assert "/api/research" not in script.text
     assert styles.status_code == 200
-    assert "@media (max-width: 760px)" in styles.text
+    assert "@media (max-width: 899px)" in styles.text
 
     created = client.post(
         "/api/research",

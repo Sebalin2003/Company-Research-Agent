@@ -20,25 +20,25 @@ from backend.app.domain.reports import (
     StructuredReportSchema,
 )
 from backend.app.llm.cv_tailoring import (
-    GeminiCVTailoringService,
+    DeepSeekCVTailoringService as GeminiCVTailoringService,
     build_cv_tailoring_prompt,
 )
 from backend.app.llm.synthesizer import SynthesisError
 
 
-class RecordingModels:
+class FakeClient:
     def __init__(self, response=None) -> None:
         self.response = response
         self.calls = []
 
-    def generate_content(self, **kwargs):
-        self.calls.append(kwargs)
+    def generate_json(self, system_prompt, contents, schema, **kwargs):
+        self.calls.append(
+            {"system_prompt": system_prompt, "contents": contents, "schema": schema, **kwargs}
+        )
+        text = getattr(self.response, "text", None)
+        if text is not None:
+            return json.loads(text)
         return self.response
-
-
-class FakeClient:
-    def __init__(self, response=None) -> None:
-        self.models = RecordingModels(response=response)
 
 
 def test_gemini_cv_tailoring_returns_structured_suggestions() -> None:
@@ -59,9 +59,9 @@ def test_gemini_cv_tailoring_returns_structured_suggestions() -> None:
         include_adapted_cv_draft=True,
     )
 
-    call = client.models.calls[0]
-    assert call["model"] == "gemini-test-model"
-    assert call["config"].response_mime_type == "application/json"
+    call = client.calls[0]
+    assert call["max_tokens"] == 4000
+    assert "change_suggestions" in call["schema"].model_json_schema()["properties"]
     assert tailoring.change_suggestions[0].type == CVTailoringSuggestionType.emphasize
     assert tailoring.change_suggestions[1].requires_user_confirmation is True
     assert "suggestion_add_metric" not in tailoring.adapted_cv_draft.included_suggestion_ids

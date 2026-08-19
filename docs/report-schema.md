@@ -8,7 +8,7 @@ The schema must be used consistently by:
 
 - backend API responses;
 - database persistence;
-- Google Gemini synthesis prompts;
+- DeepSeek synthesis prompts;
 - frontend rendering;
 - tests.
 
@@ -499,7 +499,7 @@ Use this shape for strengths, gaps, personalized questions, and questions for th
 ```json
 {
   "search_provider": "tavily",
-  "llm_provider": "gemini",
+  "llm_provider": "deepseek",
   "llm_model": "model-id",
   "source_count": 8,
   "evidence_count": 14,
@@ -511,8 +511,8 @@ Use this shape for strengths, gaps, personalized questions, and questions for th
 Fields:
 
 - `search_provider`: selected search provider.
-- `llm_provider`: must be `gemini` for the agreed MVP direction.
-- `llm_model`: configured Google Gemini model id.
+- `llm_provider`: must be `deepseek` for newly generated reports.
+- `llm_model`: configured DeepSeek model id.
 - `source_count`: number of sources retained.
 - `evidence_count`: number of evidence items retained.
 - `used_cv`: whether CV input was used.
@@ -582,7 +582,7 @@ Fields:
   "warnings": [],
   "metadata": {
     "search_provider": "tavily",
-    "llm_provider": "gemini",
+    "llm_provider": "deepseek",
     "llm_model": "model-id",
     "source_count": 1,
     "evidence_count": 1,
@@ -593,9 +593,9 @@ Fields:
 }
 ```
 
-## Google Gemini Output Contract
+## DeepSeek Output Contract
 
-Google Gemini synthesis must return JSON compatible with this schema.
+DeepSeek synthesis must return JSON compatible with this schema.
 
 Rules for prompts:
 

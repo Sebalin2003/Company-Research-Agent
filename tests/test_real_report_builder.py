@@ -185,7 +185,7 @@ def test_real_report_builder_runs_research_and_synthesis_with_cv_flags() -> None
     synthesizer = RecordingSynthesizer()
     cv_tailoring_service = RecordingCVTailoringService()
     builder = RealReportBuilder(
-        Settings(search_provider="tavily", gemini_model="gemini-test-model"),
+        Settings(search_provider="tavily", deepseek_model="deepseek-test-model"),
         pipeline,  # type: ignore[arg-type]
         synthesizer,
         cv_tailoring_service,  # type: ignore[arg-type]
@@ -211,7 +211,7 @@ def test_real_report_builder_runs_research_and_synthesis_with_cv_flags() -> None
     assert structured_report.report_id == "report_1"
     assert structured_report.company.id == "company_1"
     assert structured_report.metadata.search_provider == "tavily"
-    assert structured_report.metadata.llm_model == "gemini-test-model"
+    assert structured_report.metadata.llm_model == "deepseek-test-model"
     assert structured_report.metadata.generation_duration_ms is not None
     assert structured_report.metadata.research_duration_ms == 120
     assert structured_report.metadata.research_search_duration_ms == 70
@@ -240,7 +240,7 @@ def test_real_report_builder_runs_research_and_synthesis_with_cv_flags() -> None
 def test_real_report_builder_returns_fallback_report_when_synthesis_fails() -> None:
     pipeline = RecordingPipeline()
     builder = RealReportBuilder(
-        Settings(search_provider="tavily", gemini_model="gemini-test-model"),
+        Settings(search_provider="tavily", deepseek_model="deepseek-test-model"),
         pipeline,  # type: ignore[arg-type]
         FailingSynthesizer(),
     )
@@ -265,7 +265,7 @@ def test_real_report_builder_returns_fallback_report_when_synthesis_fails() -> N
 
 def test_real_report_builder_falls_back_when_ai_cv_tailoring_fails() -> None:
     builder = RealReportBuilder(
-        Settings(search_provider="tavily", gemini_model="gemini-test-model"),
+        Settings(search_provider="tavily", deepseek_model="deepseek-test-model"),
         RecordingPipeline(),  # type: ignore[arg-type]
         RecordingSynthesizer(),
         FailingCVTailoringService(),  # type: ignore[arg-type]
@@ -287,7 +287,7 @@ def test_real_report_builder_falls_back_when_ai_cv_tailoring_fails() -> None:
 
 def test_real_report_builder_returns_limited_report_when_real_search_finds_no_sources() -> None:
     builder = RealReportBuilder(
-        Settings(search_provider="tavily", gemini_model="gemini-test-model"),
+        Settings(search_provider="tavily", deepseek_model="deepseek-test-model"),
         EmptyPipeline(),  # type: ignore[arg-type]
         RecordingSynthesizer(),
     )

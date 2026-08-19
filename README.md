@@ -9,7 +9,7 @@ The app can research a company, generate a structured report, cite sources, show
 - Generates Spanish company research reports.
 - Collects public evidence through a configurable search pipeline.
 - Extracts and classifies evidence before asking the LLM to synthesize the report.
-- Uses Google Gemini for report generation, report-grounded chat, and embeddings.
+- Uses DeepSeek V4 Flash for agent decisions and text generation, with Google Gemini retained only for embeddings.
 - Stores reports, sources, evidence, claims, chat history, and optional CV-derived structured data in SQLite.
 - Supports optional CV upload or pasted CV text for interview preparation and CV tailoring suggestions.
 - Avoids returning or embedding raw CV text by default.
@@ -24,7 +24,7 @@ backend/
     core/         configuration and shared utilities
     db/           SQLite models, session setup, repositories
     domain/       domain objects for reports, companies, and CVs
-    llm/          Gemini client, prompts, and synthesis logic
+    llm/          DeepSeek client, prompts, and synthesis logic
     research/     search, extraction, scoring, and evidence pipeline
     services/     report generation, RAG chat, CV extraction, indexing
 
@@ -43,19 +43,20 @@ tests/            pytest coverage for backend, frontend static checks, and flows
 3. FastAPI creates a company and report record in SQLite.
 4. A background task runs the research pipeline.
 5. The pipeline searches, extracts useful page content, classifies evidence, and scores sources.
-6. Gemini receives a limited, evidence-backed context and returns structured JSON.
+6. DeepSeek receives a limited, evidence-backed context and returns structured JSON.
 7. Pydantic validates the generated report.
 8. The report is saved and can be read with `GET /api/reports/{report_id}`.
 9. Chat endpoints answer follow-up questions using saved report evidence.
 
-This is not an autonomous tool-choosing agent. The backend chooses the concrete providers and steps. The LLM synthesizes and answers from the evidence it is given.
+The conversational agent lets DeepSeek choose among bounded tools. The backend still executes tools and enforces evidence, citation, budget, validation, and persistence rules.
 
 ## Requirements
 
 - Python 3.12 recommended
 - A virtual environment
 - Optional Tavily API key for real web search
-- Google Gemini API key for real LLM synthesis and embeddings
+- DeepSeek API key for agent decisions and text generation
+- Google Gemini API key for semantic embeddings
 
 Install dependencies:
 
@@ -78,8 +79,9 @@ Important settings:
 DATABASE_URL=sqlite:///./enterprise_research_agent.db
 SEARCH_PROVIDER=mock
 TAVILY_API_KEY=
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-v4-flash
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-3.1-flash-lite
 GEMINI_EMBEDDING_MODEL=gemini-embedding-2
 ```
 
@@ -142,7 +144,7 @@ Run the test suite with the project virtual environment:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The suite covers the report flow, research pipeline, Gemini synthesis validation, RAG behavior, CV preparation, and frontend static checks.
+The suite covers the report flow, research pipeline, DeepSeek synthesis validation, Gemini embeddings, RAG behavior, CV preparation, and frontend static checks.
 
 ## Evidence And Privacy Safeguards
 

@@ -3,13 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from google import genai
-from google.genai import types
 from pydantic import BaseModel, Field, ValidationError
 
 from backend.app.core.config import Settings
 from backend.app.domain.reports import StructuredReportSchema
-from backend.app.llm.gemini import extract_json_object
+from backend.app.llm.deepseek import DeepSeekClient, extract_json_object
 from backend.app.llm.synthesizer import SynthesisError
 
 
@@ -33,27 +31,24 @@ class ReportChatService:
         self.client = client
 
     def answer(self, report: StructuredReportSchema, message: str) -> ChatAnswerPayload:
-        if not self.settings.gemini_api_key:
-            raise SynthesisError("GEMINI_API_KEY is required.")
+        if not self.settings.deepseek_api_key:
+            raise SynthesisError("DEEPSEEK_API_KEY is required.")
 
-        client = self.client or genai.Client(
-            api_key=self.settings.gemini_api_key,
-            http_options=types.HttpOptions(timeout=self.settings.gemini_timeout_ms),
+        client = self.client or DeepSeekClient(
+            api_key=self.settings.deepseek_api_key,
+            model=self.settings.deepseek_model,
+            timeout_seconds=self.settings.deepseek_timeout_seconds,
         )
         try:
-            response = client.models.generate_content(
-                model=self.settings.gemini_model,
-                contents=build_chat_prompt(report, message),
-                config=types.GenerateContentConfig(
-                    system_instruction=CHAT_SYSTEM_PROMPT,
-                    temperature=0.2,
-                    max_output_tokens=1600,
-                    response_mime_type="application/json",
-                    response_schema=ChatAnswerPayload,
-                ),
+            response = client.generate_json(
+                CHAT_SYSTEM_PROMPT,
+                build_chat_prompt(report, message),
+                ChatAnswerPayload,
+                temperature=0.2,
+                max_tokens=1600,
             )
         except Exception as exc:
-            raise SynthesisError("Gemini no pudo responder la pregunta del informe.") from exc
+            raise SynthesisError("DeepSeek no pudo responder la pregunta del informe.") from exc
         return normalize_chat_response(response, report)
 
 
@@ -112,15 +107,14 @@ def compact_report_context(report: StructuredReportSchema) -> dict[str, Any]:
 
 
 def normalize_chat_response(response: Any, report: StructuredReportSchema) -> ChatAnswerPayload:
-    parsed = getattr(response, "parsed", None)
-    if isinstance(parsed, ChatAnswerPayload):
-        payload = parsed
-    elif isinstance(parsed, dict):
-        payload = validate_chat_payload(parsed)
+    if isinstance(response, ChatAnswerPayload):
+        payload = response
+    elif isinstance(response, dict):
+        payload = validate_chat_payload(response)
     else:
-        text = getattr(response, "text", None)
+        text = getattr(response, "content", None)
         if not text:
-            raise SynthesisError("Gemini no devolvio texto para el chat.")
+            raise SynthesisError("DeepSeek no devolvio texto para el chat.")
         try:
             payload = validate_chat_payload(json.loads(text))
         except json.JSONDecodeError:
@@ -137,4 +131,4 @@ def validate_chat_payload(raw_payload: dict[str, Any]) -> ChatAnswerPayload:
     try:
         return ChatAnswerPayload.model_validate(raw_payload)
     except ValidationError as exc:
-        raise SynthesisError("Gemini no devolvio una respuesta de chat valida.") from exc
+        raise SynthesisError("DeepSeek no devolvio una respuesta de chat valida.") from exc

@@ -304,3 +304,132 @@ class GlobalChatMessage(Base):
     cited_report_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     citations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    summary: Mapped[str | None] = mapped_column(Text)
+    active_context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+    messages: Mapped[list[ConversationMessage]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
+    artifacts: Mapped[list[ConversationArtifact]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
+    task_runs: Mapped[list[TaskRun]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
+    comparisons: Mapped[list[ComparisonArtifact]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    citations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class ConversationArtifact(Base):
+    __tablename__ = "conversation_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id", "message_id", "artifact_type", "artifact_id", "relationship_type"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False, index=True
+    )
+    message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversation_messages.id"), index=True
+    )
+    artifact_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    artifact_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    relationship_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="artifacts")
+
+
+class TaskRun(Base):
+    __tablename__ = "task_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False, index=True
+    )
+    trigger_message_id: Mapped[str] = mapped_column(
+        ForeignKey("conversation_messages.id"), nullable=False, index=True
+    )
+    task_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    working_state_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    budget_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    usage_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    pause_reason_json: Mapped[str | None] = mapped_column(Text)
+    stopping_reason: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    conversation: Mapped[Conversation] = relationship(back_populates="task_runs")
+    events: Mapped[list[TaskEvent]] = relationship(
+        back_populates="task_run", cascade="all, delete-orphan"
+    )
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_run_id: Mapped[str] = mapped_column(ForeignKey("task_runs.id"), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    tool_name: Mapped[str | None] = mapped_column(String(80))
+    arguments_json: Mapped[str | None] = mapped_column(Text)
+    result_summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    artifact_refs_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+    task_run: Mapped[TaskRun] = relationship(back_populates="events")
+
+
+class ComparisonArtifact(Base):
+    __tablename__ = "comparison_artifacts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    report_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    dimensions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    citations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    warnings_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="comparisons")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -216,3 +216,165 @@ class RAGReindexResponse(BaseModel):
 
 
 JsonObject = dict[str, Any]
+
+
+class ConversationCreateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("El título no puede estar vacío.")
+        return cleaned
+
+
+class ConversationUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("El título no puede estar vacío.")
+        return cleaned
+
+
+class ConversationCreatedResponse(BaseModel):
+    conversation_id: str
+    title: str
+    created_at: str
+
+
+class ConversationSummaryResponse(BaseModel):
+    conversation_id: str
+    title: str
+    status: str
+    last_message_preview: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class ConversationListResponse(BaseModel):
+    items: list[ConversationSummaryResponse]
+    pagination: Pagination
+
+
+class ConversationMessageResponse(BaseModel):
+    message_id: str
+    role: str
+    content: str
+    status: str
+    citations: list[JsonObject] = Field(default_factory=list)
+    created_at: str
+    completed_at: str | None = None
+
+
+class ConversationArtifactResponse(BaseModel):
+    artifact_link_id: str
+    message_id: str | None = None
+    type: str
+    artifact_id: str
+    relationship_type: str
+
+
+class TaskRunResponse(BaseModel):
+    task_run_id: str
+    task_type: str
+    status: str
+    stopping_reason: str | None = None
+    pause: JsonObject | None = None
+    usage: JsonObject = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+
+
+class ConversationDetailResponse(BaseModel):
+    conversation_id: str
+    title: str
+    summary: str | None = None
+    active_context: JsonObject = Field(default_factory=dict)
+    messages: list[ConversationMessageResponse]
+    artifacts: list[ConversationArtifactResponse]
+    current_task: TaskRunResponse | None = None
+    last_event_id: int | None = None
+    created_at: str
+    updated_at: str
+
+
+class ConversationAttachmentRequest(BaseModel):
+    type: Literal["report", "cv"]
+    artifact_id: str = Field(min_length=1, max_length=200)
+
+    @field_validator("artifact_id")
+    @classmethod
+    def artifact_id_must_not_be_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("El identificador del adjunto no puede estar vacío.")
+        return cleaned
+
+
+class ConversationMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=20_000)
+    attachments: list[ConversationAttachmentRequest] = Field(default_factory=list, max_length=10)
+
+    @field_validator("content")
+    @classmethod
+    def content_must_not_be_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("El mensaje no puede estar vacío.")
+        return cleaned
+
+
+class ConversationMessageAcceptedResponse(BaseModel):
+    message_id: str
+    task_run_id: str
+    status: str
+    events_url: str
+
+
+class TaskCancelResponse(BaseModel):
+    task_run_id: str
+    status: str
+
+
+class TaskResumeRequest(BaseModel):
+    response_type: Literal["clarification", "approval"]
+    decision: Literal["approved", "rejected"] | None = None
+    content: str | None = Field(default=None, max_length=20_000)
+    selected_option_ids: list[str] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_response(self):
+        if self.response_type == "approval" and self.decision is None:
+            raise ValueError("La aprobación requiere una decisión.")
+        if self.response_type == "clarification":
+            content = (self.content or "").strip()
+            if not content and not self.selected_option_ids:
+                raise ValueError("La aclaración requiere una respuesta.")
+            self.content = content or None
+        return self
+
+
+class TaskResumeResponse(BaseModel):
+    task_run_id: str
+    status: str
+    events_url: str
+
+
+class ComparisonArtifactResponse(BaseModel):
+    comparison_id: str
+    title: str
+    report_ids: list[str]
+    dimensions: list[str]
+    payload: JsonObject
+    citations: list[JsonObject]
+    warnings: list[str]
+    created_at: str

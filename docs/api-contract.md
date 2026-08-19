@@ -45,7 +45,7 @@ Use these status codes consistently:
 - `409 Conflict`: request conflicts with current report state.
 - `422 Unprocessable Entity`: request is valid JSON but fails validation.
 - `500 Internal Server Error`: unexpected backend failure.
-- `502 Bad Gateway`: search provider or Google Gemini failure.
+- `502 Bad Gateway`: search, DeepSeek generation, or Google embedding failure.
 
 ## Error Response
 
@@ -236,7 +236,7 @@ This response is allowed only when the backend reuses an existing fresh complete
     "code": "llm_provider_failed",
     "message": "No se pudo generar el informe con el proveedor de IA. Intentalo nuevamente.",
     "details": {
-      "provider": "gemini"
+      "provider": "deepseek"
     }
   }
 }
@@ -592,7 +592,7 @@ Before returning or saving a completed report, the backend must validate:
 - all cited evidence belongs to the same report;
 - all evidence references valid sources;
 - source reliability score is between 1 and 5;
-- `metadata.llm_provider` is `gemini`;
+- `metadata.llm_provider` is `deepseek` for newly generated reports;
 - CV tailoring suggestions do not include unsupported claims;
 - `add_only_if_true` suggestions are not included in adapted drafts by default.
 

@@ -86,7 +86,7 @@ def test_research_request_creates_completed_mock_report(client: TestClient) -> N
     assert report_response.status_code == 200
     report_payload = report_response.json()["report"]
     assert report_payload["status"] == "completed"
-    assert report_payload["metadata"]["llm_provider"] == "gemini"
+    assert report_payload["metadata"]["llm_provider"] == "deepseek"
     assert report_payload["metadata"]["source_count"] == 1
     assert "research_duration_ms" in report_payload["metadata"]
     assert "research_extraction_skipped_count" in report_payload["metadata"]

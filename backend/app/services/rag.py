@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from backend.app.core.config import Settings
 from backend.app.domain.reports import EvidenceTopic, SectionType, StructuredReportSchema
-from backend.app.llm.gemini import extract_json_object
+from backend.app.llm.deepseek import DeepSeekClient, extract_json_object
 from backend.app.llm.synthesizer import SynthesisError
 
 
@@ -184,7 +184,9 @@ class RAGChatService:
         active_report_id: str | None = None,
     ) -> RAGChatResult:
         if not self.settings.gemini_api_key:
-            raise SynthesisError("GEMINI_API_KEY is required.")
+            raise SynthesisError("GEMINI_API_KEY is required for embeddings.")
+        if not self.settings.deepseek_api_key:
+            raise SynthesisError("DEEPSEEK_API_KEY is required for generation.")
 
         scope_used = choose_scope(message, active_report_id)
         if not chunks:
@@ -208,24 +210,21 @@ class RAGChatService:
                 citations=[],
             )
 
-        client = self.client or genai.Client(
-            api_key=self.settings.gemini_api_key,
-            http_options=types.HttpOptions(timeout=self.settings.gemini_timeout_ms),
+        client = self.client or DeepSeekClient(
+            api_key=self.settings.deepseek_api_key,
+            model=self.settings.deepseek_model,
+            timeout_seconds=self.settings.deepseek_timeout_seconds,
         )
         try:
-            response = client.models.generate_content(
-                model=self.settings.gemini_model,
-                contents=build_rag_chat_prompt(message, ranked_chunks),
-                config=types.GenerateContentConfig(
-                    system_instruction=RAG_CHAT_SYSTEM_PROMPT,
-                    temperature=0.2,
-                    max_output_tokens=1800,
-                    response_mime_type="application/json",
-                    response_schema=RAGChatPayload,
-                ),
+            response = client.generate_json(
+                RAG_CHAT_SYSTEM_PROMPT,
+                build_rag_chat_prompt(message, ranked_chunks),
+                RAGChatPayload,
+                temperature=0.2,
+                max_tokens=1800,
             )
         except Exception as exc:
-            raise SynthesisError("Gemini no pudo responder el chat RAG.") from exc
+            raise SynthesisError("DeepSeek no pudo responder el chat RAG.") from exc
 
         payload = normalize_rag_chat_response(response)
         citations = build_rag_citations(payload.citation_chunk_ids, ranked_chunks, source_lookup)
@@ -430,15 +429,14 @@ def build_rag_chat_prompt(message: str, chunks: list[RAGChunk]) -> str:
 
 
 def normalize_rag_chat_response(response: Any) -> RAGChatPayload:
-    parsed = getattr(response, "parsed", None)
-    if isinstance(parsed, RAGChatPayload):
-        return parsed
-    if isinstance(parsed, dict):
-        return validate_rag_chat_payload(parsed)
+    if isinstance(response, RAGChatPayload):
+        return response
+    if isinstance(response, dict):
+        return validate_rag_chat_payload(response)
 
-    text = getattr(response, "text", None)
+    text = getattr(response, "content", None)
     if not text:
-        raise SynthesisError("Gemini no devolvio texto para el chat RAG.")
+        raise SynthesisError("DeepSeek no devolvio texto para el chat RAG.")
     try:
         return validate_rag_chat_payload(json.loads(text))
     except json.JSONDecodeError:
@@ -449,7 +447,7 @@ def validate_rag_chat_payload(raw_payload: dict[str, Any]) -> RAGChatPayload:
     try:
         return RAGChatPayload.model_validate(raw_payload)
     except ValidationError as exc:
-        raise SynthesisError("Gemini no devolvio una respuesta RAG valida.") from exc
+        raise SynthesisError("DeepSeek no devolvio una respuesta RAG valida.") from exc
 
 
 def build_rag_citations(

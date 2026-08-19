@@ -4,7 +4,7 @@
 
 This document defines the backend implementation structure for the company research agent.
 
-The backend must implement the API contract, persist the database model, validate the report schema, and isolate external providers such as search APIs and Google Gemini behind testable interfaces.
+The backend must implement the API contract, persist the database model, validate the report schema, and isolate external providers such as Tavily, DeepSeek generation, and Google embeddings behind testable interfaces.
 
 Primary references:
 
@@ -21,7 +21,8 @@ Primary references:
 - SQLAlchemy or SQLModel.
 - Alembic.
 - SQLite for MVP.
-- Google Gemini for LLM synthesis.
+- DeepSeek V4 Flash for agent decisions and text generation.
+- Google Gemini for semantic embeddings only.
 - Search provider behind an internal interface.
 - pytest for tests.
 
@@ -38,7 +39,7 @@ Recommendation:
 Reason:
 
 - Company research can be slow.
-- Search providers and Google Gemini can add latency.
+- Search, DeepSeek generation, and Google embedding providers can add latency.
 - Polling avoids brittle long HTTP requests.
 - This design still allows a simple in-process background task for the MVP.
 
@@ -78,7 +79,7 @@ backend/
       search_provider.py
     llm/
       __init__.py
-      gemini.py
+      deepseek.py
       prompts.py
       synthesizer.py
     services/
@@ -125,7 +126,7 @@ Rules:
 
 - Routes should validate request schemas.
 - Routes should call services.
-- Routes should not call Google Gemini or search providers directly.
+- Routes should not call DeepSeek, Google embeddings, or search providers directly.
 - Routes should return response schemas from `app/api/schemas.py`.
 
 ### `app/api/schemas.py`
@@ -163,8 +164,8 @@ Loads runtime configuration.
 Expected settings:
 
 - database URL;
-- Google Gemini API key;
-- Google Gemini model id;
+- DeepSeek API key and model id;
+- Google Gemini API key and embedding model id;
 - search provider name;
 - search provider API key;
 - report freshness days;
@@ -344,7 +345,7 @@ Responsibilities:
 Rules:
 
 - Scoring must be deterministic.
-- Google Gemini must not decide source reliability.
+- DeepSeek must not decide source reliability.
 
 ### `app/llm/synthesizer.py`
 
@@ -364,13 +365,13 @@ Responsibilities:
 - typed request and response objects;
 - fake synthesizer for tests.
 
-### `app/llm/gemini.py`
+### `app/llm/deepseek.py`
 
-Google Gemini implementation.
+DeepSeek generation implementation.
 
 Responsibilities:
 
-- call Google Gemini API;
+- call the DeepSeek Chat Completions API;
 - pass structured evidence and source metadata;
 - request schema-compatible JSON;
 - handle provider errors;
@@ -378,8 +379,8 @@ Responsibilities:
 
 Rules:
 
-- Google Gemini output must be validated before saving.
-- Do not let Google Gemini invent sources.
+- DeepSeek output must be validated before saving.
+- Do not let DeepSeek invent sources.
 - Do not treat LLM output as evidence.
 
 ### `app/llm/prompts.py`
@@ -440,7 +441,7 @@ Responsibilities:
 - same-report citation validation;
 - factual claim evidence validation;
 - source reliability range validation;
-- Google Gemini metadata validation;
+- DeepSeek metadata validation;
 - CV tailoring safety checks.
 
 Rules:
@@ -458,7 +459,7 @@ sequenceDiagram
     participant DB as Database
     participant Pipeline as ReportBuilder
     participant Search as SearchProvider
-    participant LLM as Google Gemini
+    participant LLM as DeepSeek
 
     UI->>API: POST /api/research
     API->>Service: create research request
@@ -498,7 +499,7 @@ Production implementations:
 
 - first chosen search provider adapter;
 - HTTP content extractor;
-- Google Gemini report synthesizer.
+- DeepSeek report synthesizer.
 
 ## Report Validation Flow
 
@@ -510,7 +511,7 @@ Before saving a completed report:
 4. Validate every evidence item belongs to the same report.
 5. Validate every evidence item references a source.
 6. Validate source reliability scores are between 1 and 5.
-7. Validate `metadata.llm_provider = "gemini"`.
+7. Validate `metadata.llm_provider = "deepseek"`.
 8. Validate CV tailoring does not include `add_only_if_true` items in the adapted draft by default.
 9. Validate API response does not expose raw CV text.
 
@@ -539,7 +540,7 @@ Use fake providers to test:
 - CV preparation generation;
 - CV tailoring generation;
 - failed search provider;
-- failed Google Gemini provider;
+- failed DeepSeek provider;
 - invalid model output.
 
 ### API Tests
@@ -567,7 +568,7 @@ Cover:
 8. Add fake report builder.
 9. Add tests for API and persistence.
 10. Add deterministic research pipeline.
-11. Add Google Gemini synthesizer.
+11. Add DeepSeek synthesizer and keep Google embeddings isolated.
 12. Add real search provider adapter.
 13. Add CV extraction and tailoring.
 

@@ -4,7 +4,7 @@
 
 Radar Laboral is a local, Spanish-first conversational career assistant for job seekers in Argentina. The primary product surface is a persistent chat where the user can ask questions, research companies, compare employers, prepare for interviews, analyze job descriptions, and receive CV recommendations.
 
-The assistant is not limited to generating company reports. For every user message, Gemini decides whether to:
+The assistant is not limited to generating company reports. For every user message, DeepSeek decides whether to:
 
 - answer directly;
 - retrieve information from previous conversations or saved reports;
@@ -13,7 +13,7 @@ The assistant is not limited to generating company reports. For every user messa
 - start or continue a longer-running task;
 - request approval or review when human involvement is required.
 
-The product combines model-directed research with deterministic evidence safeguards. Gemini controls the research strategy and chooses when to use tools, while backend code controls tool execution, source scoring, evidence identifiers, budgets, persistence, citation validation, CV truthfulness, and final report validation.
+The product combines model-directed research with deterministic evidence safeguards. DeepSeek controls the research strategy and chooses when to use tools, while backend code controls tool execution, source scoring, evidence identifiers, budgets, persistence, citation validation, CV truthfulness, and final report validation.
 
 The application is intended for local, personal, single-user use. It does not require authentication or user accounts.
 
@@ -50,7 +50,7 @@ Operating assumptions:
 - no login, account, organization, or tenant boundary;
 - SQLite is the local database;
 - uploaded CV files are stored in an application-managed local directory;
-- external access is limited to configured providers such as Gemini and Tavily;
+- external access is limited to configured providers such as DeepSeek, Google embeddings, and Tavily;
 - user-facing content is in practical Argentine Spanish.
 
 ## 4. Product Principles
@@ -65,7 +65,7 @@ Company facts must be grounded in retained public evidence. The interface must k
 
 ### 4.3 Autonomous but Bounded
 
-Gemini may decide what to search, which source to inspect, which evidence gap to pursue, and when to stop. The backend enforces tool permissions, budgets, timeouts, URL restrictions, validation, and persistence.
+DeepSeek may decide what to search, which source to inspect, which evidence gap to pursue, and when to stop. The backend enforces tool permissions, budgets, timeouts, URL restrictions, validation, and persistence.
 
 ### 4.4 Human Control at Consequential Moments
 
@@ -83,18 +83,18 @@ Conversations, CV metadata, extracted CV content, reports, and agent execution h
 
 ### 5.1 Direct Response
 
-Gemini should answer without tools when the request:
+DeepSeek should answer without tools when the request:
 
 - is conversational or explanatory;
 - can be answered from the current conversation context;
 - can be answered from already retrieved, sufficiently current evidence;
 - does not require an external action or new research.
 
-Direct factual answers about companies must cite stored report evidence when available. If the evidence is insufficient, Gemini must say so rather than rely on unsourced model knowledge.
+Direct factual answers about companies must cite stored report evidence when available. If the evidence is insufficient, DeepSeek must say so rather than rely on unsourced model knowledge.
 
 ### 5.2 Clarification
 
-Gemini should ask a focused clarification when different interpretations would materially change the result, including:
+DeepSeek should ask a focused clarification when different interpretations would materially change the result, including:
 
 - ambiguous company identity;
 - unclear comparison scope;
@@ -106,7 +106,7 @@ The task is persisted with `needs_clarification` status and resumes after the us
 
 ### 5.3 Autonomous Task Execution
 
-Gemini may start a bounded task when the request requires:
+DeepSeek may start a bounded task when the request requires:
 
 - researching a company;
 - refreshing stale or incomplete evidence;
@@ -147,12 +147,13 @@ Authentication-free local UI actions explicitly initiated by the user, such as p
 
 The initial agent uses:
 
-- Google Gen AI SDK for Python (`google-genai`);
-- stable model `gemini-3.1-flash-lite`;
-- Gemini function calling for intermediate actions;
-- structured output for final reports and typed artifacts.
+- the existing `httpx` client for DeepSeek's OpenAI-compatible Chat Completions API;
+- model `deepseek-v4-flash` in non-thinking mode;
+- DeepSeek tool calls for intermediate actions;
+- JSON output plus Pydantic validation for final reports and typed artifacts;
+- Google Gen AI only for `gemini-embedding-2` embeddings.
 
-Gemini 3.1 Flash-Lite supports function calling, structured output, and thinking according to the [official model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite).
+DeepSeek V4 Flash supports tool calls and JSON output according to the [official API documentation](https://api-docs.deepseek.com/api/create-chat-completion/). Thinking is explicitly disabled so the backend-controlled loop never stores private reasoning content.
 
 The model remains configurable through environment settings, but any replacement must support function calling and structured output.
 
@@ -163,7 +164,7 @@ The first implementation uses one agent, not a multi-agent system.
 ```mermaid
 flowchart TD
     A["User message"] --> B["Build scoped conversation context"]
-    B --> C["Gemini decides next action"]
+    B --> C["DeepSeek decides next action"]
     C -->|"Answer is available"| D["Stream grounded response"]
     C -->|"Information is ambiguous"| E["Request clarification"]
     C -->|"Tool is needed"| F["Validate and execute tool"]
@@ -182,7 +183,7 @@ For each loop iteration, the backend must:
 3. validate the requested tool and arguments;
 4. execute the tool in application code;
 5. persist a concise event and resulting artifact references;
-6. return the tool result to Gemini;
+6. return the tool result to DeepSeek;
 7. stop on a final response, pause state, failure, cancellation, or hard budget.
 
 Private chain-of-thought must not be requested, exposed, or stored. The system may retain concise user-visible action summaries and provider-required opaque thought signatures while a model interaction is active.
@@ -210,11 +211,11 @@ The initial controlled tool set includes:
 
 - Purpose: show deterministic topic coverage and unresolved gaps.
 - Output: coverage by topic, strong/weak evidence counts, stale evidence, conflicts, and missing topics.
-- Rules: Gemini may use the result for planning but may not assign or override reliability scores.
+- Rules: DeepSeek may use the result for planning but may not assign or override reliability scores.
 
 #### `finish_research`
 
-- Purpose: let Gemini declare that further research is unlikely to improve the result.
+- Purpose: let DeepSeek declare that further research is unlikely to improve the result.
 - Inputs: stopping reason and unresolved topics.
 - Rules: the backend may reject premature completion when minimum requirements are unmet and budget remains.
 
@@ -244,7 +245,7 @@ The initial controlled tool set includes:
 - Purpose: generate evidence-linked CV positioning and tailoring suggestions from the CV, job description, and relevant company evidence.
 - Rules: outputs are drafts requiring review; `add_only_if_true` content is excluded from adapted drafts until confirmed.
 
-Tools for database deletion, arbitrary filesystem access, arbitrary HTTP requests, shell execution, email, applications, or external publication are not exposed to Gemini in the initial version.
+Tools for database deletion, arbitrary filesystem access, arbitrary HTTP requests, shell execution, email, applications, or external publication are not exposed to DeepSeek in the initial version.
 
 ### 6.4 Budgets and Stopping
 
@@ -257,7 +258,7 @@ Agent budgets are configurable and enforced server-side. They cover:
 - provider timeouts;
 - extracted content size.
 
-Gemini cannot increase its own budget. When the standard budget is exhausted and meaningful gaps remain, the task changes to `awaiting_approval` and offers one explicit option to continue with an extended budget. Repeated searches or inspections that produce no new evidence count toward the stopping decision.
+DeepSeek cannot increase its own budget. When the standard budget is exhausted and meaningful gaps remain, the task changes to `awaiting_approval` and offers one explicit option to continue with an extended budget. Repeated searches or inspections that produce no new evidence count toward the stopping decision.
 
 ## 7. Memory Model
 
@@ -317,7 +318,7 @@ Existing report evidence remains the factual source of truth.
 
 ### 7.5 Semantic Retrieval Memory
 
-Gemini embeddings and local SQLite similarity search retrieve relevant report chunks for follow-up and comparative questions. Retrieval must be scoped to the active conversation, explicitly selected artifacts, or permitted historical reports.
+Google Gemini embeddings and local SQLite similarity search retrieve relevant report chunks for follow-up and comparative questions. DeepSeek receives only the selected chunks for answer generation. Retrieval must be scoped to the active conversation, explicitly selected artifacts, or permitted historical reports.
 
 Raw CV text and CV-derived personal content must not be placed in the general report embedding index.
 
@@ -372,7 +373,7 @@ From the sidebar, the user can:
 
 Replacing a file creates a new version and does not silently overwrite the original. Editing extracted text also creates a new logical version or revision entry.
 
-If exactly one CV exists, it may become the default automatically. If several CVs exist and none is default or explicitly attached, Gemini must ask which CV to use for CV-related tasks.
+If exactly one CV exists, it may become the default automatically. If several CVs exist and none is default or explicitly attached, DeepSeek must ask which CV to use for CV-related tasks.
 
 ### 8.3 CV Safety
 
@@ -420,7 +421,7 @@ Deterministic code continues to handle:
 - report schema validation;
 - source and evidence persistence.
 
-Gemini may choose what to investigate and synthesize, but it may not treat its own knowledge as a source or weaken validation rules.
+DeepSeek may choose what to investigate and synthesize, but it may not treat its own knowledge as a source or weaken validation rules.
 
 ### 9.3 Report Artifacts
 
@@ -884,7 +885,7 @@ Even as a local single-user application, the system must:
 - reject path traversal and unsupported file types;
 - enforce file and extracted-text size limits;
 - avoid logging raw CV text, job descriptions, secrets, or complete provider payloads;
-- send CV content to Gemini only for an explicit CV-related request;
+- send CV content to DeepSeek only for an explicit CV-related request;
 - keep CV content out of general report embeddings;
 - never expose local filesystem paths through the API;
 - validate all model-requested tool arguments;
@@ -900,7 +901,7 @@ Errors use stable machine-readable codes and practical Spanish messages.
 
 Required scenarios include:
 
-- Gemini unavailable or invalid tool call;
+- DeepSeek unavailable or invalid tool call;
 - Tavily unavailable or empty results;
 - page extraction failure;
 - unsupported or unsafe URL;
@@ -914,18 +915,18 @@ Required scenarios include:
 - failed task resume;
 - deleted artifact referenced by an older conversation.
 
-A failed tool should not automatically fail the whole task when Gemini can use another source or produce a limited, clearly warned answer. Invalid final factual output must not be saved as completed.
+A failed tool should not automatically fail the whole task when DeepSeek can use another source or produce a limited, clearly warned answer. Invalid final factual output must not be saved as completed.
 
 ## 17. Quality and Safety Rules
 
 The system must not:
 
 - invent sources, salaries, employee numbers, vacancies, benefits, interview stages, or company presence;
-- treat Gemini's prior knowledge as evidence;
+- treat DeepSeek's prior knowledge as evidence;
 - hide stale, conflicting, or missing evidence;
 - summarize a small number of anonymous reviews as universal truth;
 - expose private chain-of-thought;
-- allow Gemini to bypass budgets or validators;
+- allow DeepSeek to bypass budgets or validators;
 - run arbitrary URLs or filesystem operations requested by the model;
 - silently select among multiple non-default CVs;
 - overwrite an original CV;
@@ -948,7 +949,7 @@ The system should:
 
 ### 18.1 Agent Routing and Tools
 
-Test that Gemini-facing orchestration can:
+Test that DeepSeek-facing orchestration can:
 
 - answer directly without tools when appropriate;
 - retrieve a saved report for a grounded follow-up;
@@ -1072,7 +1073,7 @@ The existing frontend is replaced behaviorally by the conversation-first UI, but
 
 ### Phase 2: Agent Orchestration
 
-- Gemini function-calling loop;
+- DeepSeek tool-calling loop;
 - controlled research and retrieval tools;
 - budgets, progress events, pause states, and grounding validation;
 - report and comparison artifacts.
@@ -1098,7 +1099,7 @@ The conversational rebuild is successful when:
 
 - the first screen is a usable chat rather than a research form;
 - conversation history persists and can be searched, renamed, reopened, and deleted;
-- Gemini can choose between a direct response, clarification, retrieval, and tool execution;
+- DeepSeek can choose between a direct response, clarification, retrieval, and tool execution;
 - different requests produce different bounded research plans;
 - the agent can perform targeted follow-up research and stop based on evidence coverage;
 - reports and comparisons appear inline with citations, freshness, confidence, and warnings;

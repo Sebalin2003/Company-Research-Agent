@@ -3,174 +3,190 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
     <title>Radar Laboral</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20" />
+    <link rel="stylesheet" href="/static/styles.css?v=24" />
   </head>
   <body>
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="brand">
-          <h1>Radar Laboral</h1>
-          <p>Investigaci&oacute;n de empresas para preparar tu postulaci&oacute;n.</p>
+    <a class="skip-link" href="#conversationTranscript">Saltar a la conversaci&oacute;n</a>
+
+    <div class="app-shell" id="appShell">
+      <button class="sidebar-backdrop" id="sidebarBackdrop" type="button" aria-label="Cerrar men&uacute;"></button>
+
+      <aside class="sidebar" id="sidebar" aria-label="Conversaciones y biblioteca personal">
+        <div class="sidebar-header">
+          <button class="brand-button" id="brandButton" type="button" aria-label="Ir a una conversaci&oacute;n nueva">
+            <span class="brand-mark" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </span>
+            <span>Radar Laboral</span>
+          </button>
+          <button class="icon-button mobile-only" id="closeSidebar" type="button" aria-label="Cerrar men&uacute;">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
         </div>
-        <div class="status-pill" id="connectionStatus" role="status">Listo</div>
-      </header>
 
-      <main class="workspace">
-        <section class="query-panel" aria-labelledby="researchTitle">
-          <div class="panel-heading">
-            <h2 id="researchTitle">Investigar empresa</h2>
+        <button class="new-chat-button" id="newChatButton" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          <span>Nuevo chat</span>
+        </button>
+
+        <label class="conversation-search" for="conversationSearch">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
+          <span class="sr-only">Buscar conversaciones</span>
+          <input id="conversationSearch" type="search" placeholder="Buscar conversaciones" autocomplete="off" />
+          <kbd>Ctrl K</kbd>
+        </label>
+
+        <nav class="conversation-nav" id="conversationNav" aria-label="Historial de conversaciones"></nav>
+
+        <div class="sidebar-tools">
+          <button class="sidebar-tool" id="cvLibraryButton" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" /><path d="M14 3v5h5M10 13h5M10 17h5" /></svg>
+            <span>
+              <strong>Mi CV</strong>
+              <small id="cvSidebarSummary">Disponible pr&oacute;ximamente</small>
+            </span>
+            <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+          </button>
+          <button class="sidebar-tool" id="settingsButton" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.4 4a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.38.35.72.66.97.3.25.69.39 1.08.4H21v4h-.1A1.7 1.7 0 0 0 19.4 15Z" /></svg>
+            <span><strong>Configuraci&oacute;n</strong></span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main-workspace" id="mainWorkspace">
+        <header class="workspace-header">
+          <button class="icon-button sidebar-trigger" id="openSidebar" type="button" aria-label="Abrir men&uacute;">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16" /></svg>
+          </button>
+          <div class="workspace-title">
+            <h1 id="workspaceTitle">Nueva conversaci&oacute;n</h1>
+            <span class="workspace-status" id="workspaceStatus"><span aria-hidden="true"></span>Lista</span>
           </div>
-
-          <form id="researchForm" class="research-form">
-            <div class="form-block">
-              <label>
-                Empresa
-                <input
-                  id="companyName"
-                  name="companyName"
-                  type="text"
-                  autocomplete="organization"
-                  placeholder="Ej: Mercado Libre"
-                  required
-                />
-              </label>
+          <div class="workspace-actions">
+            <button class="icon-button" id="conversationMenuButton" type="button" aria-label="Opciones de la conversaci&oacute;n" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.2" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" /><circle cx="12" cy="19" r="1.2" fill="currentColor" stroke="none" /></svg>
+            </button>
+            <div class="floating-menu header-menu hidden" id="conversationMenu" role="menu">
+              <button type="button" role="menuitem" data-header-action="rename">Renombrar</button>
+              <button class="danger-menu-item" type="button" role="menuitem" data-header-action="delete">Eliminar</button>
             </div>
+          </div>
+        </header>
 
-            <details class="form-block cv-disclosure" id="cvDisclosure">
-              <summary>
-                <span>
-                  <strong>Usar mi CV</strong>
-                  <small>Opcional &middot; personaliza la preparaci&oacute;n</small>
-                </span>
-                <span class="disclosure-action">Agregar</span>
-              </summary>
-              <div class="cv-disclosure-content">
-                <p>Sub&iacute; un PDF o DOCX, o peg&aacute; el texto. El archivo original no se modifica.</p>
-                <input class="sr-only" id="cvFile" name="cvFile" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
-                <label class="upload-control" for="cvFile">
-                  <span class="upload-action">Subir CV</span>
-                  <span class="upload-copy">
-                    <strong id="cvFileName">PDF o DOCX</strong>
-                    <small id="cvFileStatus">Ning&uacute;n archivo seleccionado.</small>
-                  </span>
-                </label>
-                <details class="cv-text-disclosure" id="cvTextDisclosure">
-                  <summary>Revisar o pegar texto del CV</summary>
-                  <label>
-                    Texto del CV
-                    <textarea
-                      id="cvText"
-                      name="cvText"
-                      rows="8"
-                      placeholder="Peg&aacute; el contenido de tu CV."
-                    ></textarea>
-                  </label>
-                </details>
-                <div class="job-context">
-                  <label>
-                    Descripci&oacute;n del puesto
-                    <textarea
-                      id="jobDescription"
-                      name="jobDescription"
-                      rows="6"
-                      maxlength="20000"
-                      aria-describedby="jobDescriptionHelp jobDescriptionCount"
-                      placeholder="Peg&aacute; los requisitos y responsabilidades de la vacante."
-                    ></textarea>
-                  </label>
-                  <div class="field-meta">
-                    <span class="field-note" id="jobDescriptionHelp">Opcional. Se usa para comparar el puesto con tu CV.</span>
-                    <span class="character-count" id="jobDescriptionCount">0 / 20.000</span>
-                  </div>
+        <div class="demo-notice" id="demoNotice" role="status">
+          <span class="origin-badge local">Local</span>
+          <span>Agente DeepSeek &middot; Conversaciones, herramientas y eventos guardados localmente.</span>
+        </div>
+
+        <section class="conversation-view" id="conversationView" aria-label="Conversaci&oacute;n">
+          <div class="conversation-transcript" id="conversationTranscript" tabindex="-1" aria-live="polite"></div>
+
+          <div class="composer-dock">
+            <div class="attachment-chips" id="attachmentChips" aria-live="polite"></div>
+            <form class="chat-composer" id="composerForm">
+              <div class="attachment-control">
+                <button class="composer-icon-button" id="attachmentButton" type="button" aria-label="Adjuntar contexto" aria-expanded="false" aria-controls="attachmentMenu">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                </button>
+                <div class="floating-menu attachment-menu hidden" id="attachmentMenu" role="menu">
+                  <button type="button" role="menuitem" data-attachment-action="stored-cv" disabled title="Disponible en la pr&oacute;xima etapa">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" /><path d="M14 3v5h5" /></svg>
+                    Adjuntar desde Mi CV
+                  </button>
+                  <button type="button" role="menuitem" data-attachment-action="upload-cv" disabled title="Disponible en la pr&oacute;xima etapa">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M8 8l4-4 4 4M5 15v5h14v-5" /></svg>
+                    Subir nuevo CV
+                  </button>
+                  <button type="button" role="menuitem" data-attachment-action="job" disabled title="Disponible en la pr&oacute;xima etapa">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="2" /><path d="M9 7V5h6v2M4 12h16" /></svg>
+                    Adjuntar descripci&oacute;n de puesto
+                  </button>
+                  <button type="button" role="menuitem" data-attachment-action="report">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4" /></svg>
+                    Adjuntar informe guardado
+                  </button>
                 </div>
-                <span class="field-note">Solo se usan se&ntilde;ales seleccionadas del CV y del puesto. Revis&aacute; siempre las sugerencias antes de usarlas.</span>
               </div>
-            </details>
-
-            <div class="form-block">
-              <div class="block-heading">
-                <h3>Personalizaci&oacute;n</h3>
-              </div>
-              <div class="toggles" aria-label="Opciones de CV">
-                <label class="toggle-row">
-                  <input id="includeTailoring" type="checkbox" disabled />
-                  <span>
-                    <strong>Sugerir cambios asistidos por IA</strong>
-                    <small>Compara tu experiencia con la empresa y el puesto.</small>
-                  </span>
-                </label>
-                <label class="toggle-row nested-option">
-                  <input id="includeDraft" type="checkbox" disabled />
-                  <span>
-                    <strong>Incluir borrador adaptado</strong>
-                    <small>No agrega datos que no est&eacute;n confirmados.</small>
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <p class="form-error hidden" id="formError" role="alert"></p>
-            <div class="form-actions">
-              <button class="primary-button" type="submit">Generar informe</button>
-              <button class="secondary-button" type="button" id="clearButton">Borrar formulario</button>
-            </div>
-          </form>
+              <label class="composer-input" for="composerText">
+                <span class="sr-only">Mensaje para Radar Laboral</span>
+                <textarea id="composerText" rows="1" placeholder="Escrib&iacute; un mensaje o ped&iacute; una tarea"></textarea>
+              </label>
+              <button class="send-button" id="sendButton" type="submit" aria-label="Enviar mensaje">
+                <svg class="send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+                <svg class="stop-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" stroke="none" /></svg>
+              </button>
+            </form>
+            <p class="composer-note">La informaci&oacute;n puede contener errores. Verific&aacute; los datos importantes antes de decidir.</p>
+          </div>
         </section>
 
-        <div class="report-stack">
-          <section class="report-panel" aria-live="polite">
-            <div id="emptyState" class="empty-state">
-              <div class="radar-mark" aria-hidden="true"></div>
-              <h2>Busca una empresa para empezar</h2>
-              <p>El informe separa hechos, inferencias y advertencias para preparar una postulaci&oacute;n con mejor contexto.</p>
-            </div>
-
-            <div id="loadingState" class="loading-state hidden" role="status" aria-live="polite" aria-busy="true" tabindex="-1">
-              <div class="scanline" aria-hidden="true"></div>
-              <h2>Generando informe</h2>
-              <strong id="loadingCompany"></strong>
-              <p id="loadingMessage">La investigaci&oacute;n est&aacute; pendiente.</p>
-              <small>Esto puede tardar algunos minutos. Pod&eacute;s dejar esta pesta&ntilde;a abierta.</small>
-            </div>
-
-            <div id="errorState" class="error-state hidden" role="alert" tabindex="-1">
-              <h2>No se pudo generar el informe</h2>
-              <p id="errorMessage">Revis&aacute; los datos e intent&aacute; nuevamente.</p>
-              <button class="secondary-button" type="button" id="retryButton">Reintentar investigaci&oacute;n</button>
-            </div>
-
-            <article id="reportView" class="report-view hidden" tabindex="-1"></article>
-            <section class="chat-panel chat-collapsed" id="chatPanel" aria-labelledby="chatTitle">
-              <div class="panel-heading compact">
-                <div>
-                  <h2 id="chatTitle">Preguntar sobre el informe</h2>
-                  <p id="chatHint">Pregunt&aacute; sobre este informe o los reportes guardados.</p>
-                </div>
-                <button class="secondary-button compact-button chat-toggle" id="chatToggle" type="button" aria-expanded="false" aria-controls="chatMessages">Abrir</button>
-              </div>
-              <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
-              <form id="chatForm" class="chat-composer">
-                <input id="chatInput" type="text" aria-label="Pregunta para el chat" placeholder="Pregunt&aacute; sobre entrevistas, sueldos, cultura o comparaciones..." />
-                <button class="primary-button chat-send" id="chatSubmit" type="submit">Enviar</button>
-              </form>
-            </section>
-          </section>
-        </div>
-
-        <aside class="history-panel" aria-labelledby="historyTitle">
-          <div class="panel-heading compact">
-            <h2 id="historyTitle">Historial</h2>
-            <div class="history-actions">
-              <button class="quiet-button compact-button" id="clearHistory" type="button">Borrar todo</button>
-              <button class="icon-button" id="refreshHistory" type="button" title="Actualizar historial" aria-label="Actualizar historial">&#8635;</button>
-            </div>
-          </div>
-          <div id="historyList" class="history-list"></div>
-        </aside>
+        <section class="cv-workspace hidden" id="cvWorkspace" aria-labelledby="cvWorkspaceTitle"></section>
       </main>
     </div>
 
-    <script src="/static/app.js?v=26" defer></script>
+    <input class="sr-only" id="cvFileInput" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+
+    <dialog class="app-dialog" id="jobDialog" aria-labelledby="jobDialogTitle">
+      <form method="dialog" id="jobDialogForm">
+        <div class="dialog-heading">
+          <div>
+            <h2 id="jobDialogTitle">Adjuntar descripci&oacute;n de puesto</h2>
+            <p>Peg&aacute; los requisitos y responsabilidades de la vacante.</p>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="Cerrar">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+        <label class="dialog-field">
+          Descripci&oacute;n
+          <textarea id="jobDescriptionInput" rows="10" maxlength="20000"></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary-button" value="cancel">Cancelar</button>
+          <button class="primary-button" id="saveJobDescription" value="default">Adjuntar al mensaje</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog compact-dialog" id="renameDialog" aria-labelledby="renameDialogTitle">
+      <form method="dialog" id="renameDialogForm">
+        <div class="dialog-heading">
+          <div>
+            <h2 id="renameDialogTitle">Renombrar</h2>
+            <p id="renameDialogHint">Eleg&iacute; un nombre claro.</p>
+          </div>
+        </div>
+        <label class="dialog-field">
+          Nombre
+          <input id="renameInput" type="text" maxlength="80" required />
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary-button" value="cancel">Cancelar</button>
+          <button class="primary-button" id="confirmRename" value="default">Guardar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog compact-dialog" id="confirmDialog" aria-labelledby="confirmDialogTitle">
+      <form method="dialog" id="confirmDialogForm">
+        <div class="dialog-heading">
+          <div>
+            <h2 id="confirmDialogTitle">Confirmar acci&oacute;n</h2>
+            <p id="confirmDialogMessage"></p>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" value="cancel">Cancelar</button>
+          <button class="danger-button" id="confirmAction" value="default">Eliminar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast-region" id="toastRegion" role="status" aria-live="polite"></div>
+
+    <script src="/static/app.js?v=38" defer></script>
   </body>
 </html>

@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.errors import register_error_handlers
 from backend.app.api.routes import router
+from backend.app.db.conversation_repository import ConversationRepository
 from backend.app.db.repositories import ReportRepository
 from backend.app.db.session import SessionLocal
 from backend.app.db.session import init_db
@@ -19,6 +20,9 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend"
 INTERRUPTED_REPORT_MESSAGE = (
     "La investigaci\u00f3n fue interrumpida por un reinicio. "
     "Volv\u00e9 a intentarlo."
+)
+INTERRUPTED_TASK_MESSAGE = (
+    "La tarea fue interrumpida por un reinicio. Volvé a enviar el mensaje para continuar."
 )
 
 
@@ -32,10 +36,21 @@ def recover_interrupted_reports() -> int:
         db.close()
 
 
+def recover_interrupted_conversation_tasks() -> int:
+    db = SessionLocal()
+    try:
+        count = ConversationRepository(db).fail_interrupted_tasks(INTERRUPTED_TASK_MESSAGE)
+        db.commit()
+        return count
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
     recover_interrupted_reports()
+    recover_interrupted_conversation_tasks()
     yield
 
 

@@ -15,7 +15,11 @@ from backend.app.domain.reports import (
     SourceType,
     StructuredReportSchema,
 )
-from backend.app.llm.gemini import GeminiReportSynthesizer
+from backend.app.llm.deepseek import (
+    DeepSeekAPIError,
+    DeepSeekReportSynthesizer as GeminiReportSynthesizer,
+    extract_json_object,
+)
 from backend.app.llm.prompts import SYSTEM_PROMPT
 from backend.app.llm.prompts import build_compact_report_payload
 from backend.app.llm.prompts import build_report_user_prompt
@@ -23,49 +27,54 @@ from backend.app.llm.synthesizer import SynthesisError, SynthesisRequest
 from backend.app.research.types import ClassifiedEvidence, ScoredSource
 
 
-class RecordingModels:
+class FakeClient:
     def __init__(self, response=None, responses=None, error: Exception | None = None) -> None:
         self.responses = list(responses) if responses is not None else None
         self.response = response
         self.error = error
         self.calls = []
+        self.models = self
 
-    def generate_content(self, **kwargs):
-        self.calls.append(kwargs)
+    def generate_json(self, system_prompt, contents, schema, **kwargs):
+        self.calls.append(
+            {"system_prompt": system_prompt, "contents": contents, "schema": schema, **kwargs}
+        )
         if self.error:
             raise self.error
         if self.responses is not None:
-            return self.responses.pop(0)
-        return self.response
+            response = self.responses.pop(0)
+        else:
+            response = self.response
+        if isinstance(response, dict):
+            return response
+        text = getattr(response, "text", None)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                return json.loads(extract_json_object(text))
+            except (json.JSONDecodeError, SynthesisError) as exc:
+                raise DeepSeekAPIError("DeepSeek returned invalid JSON.", raw_content=text) from exc
 
 
-class FakeClient:
-    def __init__(self, response=None, responses=None, error: Exception | None = None) -> None:
-        self.models = RecordingModels(response=response, responses=responses, error=error)
-
-
-def test_gemini_synthesizer_sends_structured_output_request() -> None:
-    client = FakeClient(response=SimpleNamespace(text=json.dumps(valid_report_payload())))
+def test_deepseek_synthesizer_sends_structured_output_request() -> None:
+    client = FakeClient(response=valid_report_payload())
     synthesizer = GeminiReportSynthesizer(
         api_key="test-key",
-        model="gemini-test-model",
+        model="deepseek-test-model",
         client=client,
     )
 
     report = synthesizer.synthesize(synthesis_request())
 
-    call = client.models.calls[0]
-    assert call["model"] == "gemini-test-model"
-    assert call["config"].response_mime_type == "application/json"
-    assert call["config"].max_output_tokens == 8000
-    assert "supporting_quote" in json.dumps(
-        call["config"].response_schema.model_json_schema()
-    )
+    call = client.calls[0]
+    assert call["max_tokens"] == 8000
+    assert "supporting_quote" in json.dumps(call["schema"].model_json_schema())
     assert report.status == ReportStatus.completed
     assert report.sections[0].type == SectionType.executive_summary
     assert report.sections[0].claims[0].type == ClaimType.fact
-    assert report.metadata.llm_provider == "gemini"
-    assert report.metadata.llm_model == "gemini-test-model"
+    assert report.metadata.llm_provider == "deepseek"
+    assert report.metadata.llm_model == "deepseek-test-model"
     assert "supporting_quote" not in report.model_dump_json()
     assert "supporting_quote" not in json.dumps(StructuredReportSchema.model_json_schema())
 
@@ -230,7 +239,7 @@ def test_gemini_synthesizer_normalizes_missing_source_metadata() -> None:
     report = synthesizer.synthesize(synthesis_request())
 
     assert report.sources[0].accessed_at is not None
-    assert report.metadata.llm_provider == "gemini"
+    assert report.metadata.llm_provider == "deepseek"
     assert report.metadata.source_count == 1
 
 

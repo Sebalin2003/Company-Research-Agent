@@ -12,7 +12,7 @@ The database must support:
 - optional CV-derived personalization;
 - optional CV tailoring suggestions and adapted CV drafts;
 - report-grounded chat messages;
-- Google Gemini generation metadata;
+- DeepSeek generation metadata and Google embedding metadata;
 - future migration from SQLite to PostgreSQL.
 
 Primary schema reference:
@@ -105,7 +105,7 @@ Columns:
 | `valid_until` | datetime | no | Suggested report freshness window. |
 | `summary` | text | no | Executive summary for quick listing. |
 | `warnings_json` | JSON/text | yes | Report-level warning objects. |
-| `metadata_json` | JSON/text | yes | Search provider, Google Gemini model, counts, timings. |
+| `metadata_json` | JSON/text | yes | Search provider, DeepSeek model, counts, timings. |
 | `error_message` | text | no | Spanish or developer-readable failure message. |
 | `created_at` | datetime | yes | Creation timestamp. |
 | `updated_at` | datetime | yes | Last update timestamp. |
@@ -498,7 +498,7 @@ Before a report can be marked `completed`:
 - every `claim_evidence.evidence_id` must belong to the same report as the claim;
 - every evidence item must reference a valid source;
 - source reliability scores must be between 1 and 5;
-- metadata must include `llm_provider = "gemini"`;
+- metadata must include `llm_provider = "deepseek"` for newly generated reports;
 - if a CV was provided, `candidate_profiles` must exist and personalization must either exist or include a clear warning.
 - if CV tailoring was requested, `cv_tailorings` must exist and suggestions must preserve original CV facts.
 

@@ -5,120 +5,150 @@ from fastapi.testclient import TestClient
 from backend.app.main import create_app
 
 
-def test_frontend_index_is_served() -> None:
+def test_conversational_frontend_index_is_served() -> None:
     client = TestClient(create_app())
 
     response = client.get("/")
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=26" in response.text
-    assert "/static/styles.css?v=20" in response.text
+    assert "/static/app.js?v=38" in response.text
+    assert "/static/styles.css?v=24" in response.text
     assert "viewport-fit=cover" in response.text
-    assert 'id="cvFile"' in response.text
-    assert 'class="upload-control"' in response.text
-    assert 'id="cvDisclosure"' in response.text
-    assert 'id="cvTextDisclosure"' in response.text
-    assert 'id="jobDescription"' in response.text
-    assert 'maxlength="20000"' in response.text
-    assert 'id="jobDescriptionCount"' in response.text
-    assert "Usar mi CV" in response.text
-    assert 'id="includeTailoring" type="checkbox" disabled' in response.text
-    assert 'id="includeDraft" type="checkbox" disabled' in response.text
-    assert 'id="formError" role="alert"' in response.text
-    assert 'id="loadingState"' in response.text
-    assert 'aria-busy="true"' in response.text
-    assert 'id="retryButton"' in response.text
-    assert 'id="reportView" class="report-view hidden" tabindex="-1"' in response.text
-    assert 'id="chatForm"' in response.text
-    assert 'class="chat-composer"' in response.text
-    assert 'id="chatToggle"' in response.text
-    assert 'class="chat-panel chat-collapsed"' in response.text
-    assert "Preguntar sobre el informe" in response.text
-    assert 'id="chatInput" type="text"' in response.text
-    assert 'id="clearHistory"' in response.text
-    assert "Borrar todo" in response.text
-    assert "Informe en espa&ntilde;ol con fuentes" not in response.text
-    assert ">Pregunta<" not in response.text
-    assert response.text.index('class="query-panel"') < response.text.index('class="report-panel"')
-    assert response.text.index('id="reportView"') < response.text.index('id="chatPanel"')
-    assert response.text.index('id="chatPanel"') < response.text.index('class="history-panel"')
+
+    # Two-region conversational shell and accessible landmarks.
+    assert 'id="sidebar"' in response.text
+    assert 'id="newChatButton"' in response.text
+    assert 'id="conversationSearch"' in response.text
+    assert 'id="conversationNav"' in response.text
+    assert 'id="cvLibraryButton"' in response.text
+    assert 'id="mainWorkspace"' in response.text
+    assert 'id="conversationView"' in response.text
+    assert 'id="conversationTranscript"' in response.text
+    assert 'aria-label="Conversaci&oacute;n"' in response.text
+    assert "Agente DeepSeek" in response.text
+
+    # Sticky composer and attachment controls.
+    assert 'id="composerForm"' in response.text
+    assert 'id="composerText"' in response.text
+    assert "textarea" in response.text
+    assert 'id="attachmentButton"' in response.text
+    assert 'id="attachmentMenu"' in response.text
+    assert 'id="attachmentChips"' in response.text
+    assert 'data-attachment-action="stored-cv"' in response.text
+    assert 'data-attachment-action="upload-cv"' in response.text
+    assert 'data-attachment-action="job"' in response.text
+    assert 'data-attachment-action="report"' in response.text
+    assert response.text.count('title="Disponible en la pr&oacute;xima etapa"') == 3
+    assert 'id="cvFileInput"' in response.text
+    assert 'accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"' in response.text
+
+    # CV management and native dialogs are present without backend persistence claims.
+    assert 'id="cvWorkspace"' in response.text
+    assert 'aria-labelledby="cvWorkspaceTitle"' in response.text
+    assert 'id="jobDialog"' in response.text
+    assert 'id="renameDialog"' in response.text
+    assert 'id="confirmDialog"' in response.text
+
+    # The former form/report/history layout is gone.
+    for obsolete_hook in (
+        'id="researchForm"',
+        'id="companyName"',
+        'id="includeTailoring"',
+        'id="chatToggle"',
+        'id="historyList"',
+        'class="query-panel"',
+        'class="history-panel"',
+        'chat-collapsed',
+    ):
+        assert obsolete_hook not in response.text
+
+    assert response.text.index('id="sidebar"') < response.text.index('id="mainWorkspace"')
 
 
-def test_frontend_assets_are_served() -> None:
+def test_conversational_frontend_assets_are_served() -> None:
     client = TestClient(create_app())
 
     css_response = client.get("/static/styles.css")
     js_response = client.get("/static/app.js")
 
     assert css_response.status_code == 200
-    assert "grid-template-columns" in css_response.text
-    assert "minmax(500px, 1fr)" in css_response.text
-    assert ".report-panel" in css_response.text
-    assert "grid-template-rows: minmax(0, 1fr) auto" in css_response.text
-    assert "height: calc(100vh - 116px)" in css_response.text
-    assert ".report-view" in css_response.text
-    assert "overflow-y: auto" in css_response.text
-    assert ".history-list" in css_response.text
-    assert "grid-template-columns: minmax(0, 1fr) 44px" in css_response.text
-    assert "overflow-wrap: anywhere" in css_response.text
-    assert "grid-template-rows: auto minmax(0, 1fr)" in css_response.text
-    assert "scrollbar-width: thin" in css_response.text
-    assert "--scroll-thumb:" in css_response.text
-    assert ".chat-composer input" in css_response.text
-    assert ".chat-panel.chat-collapsed .chat-messages" in css_response.text
-    assert ".chat-panel {\n  align-self: start;\n  background: transparent;" in css_response.text
-    assert ".chat-panel .panel-heading.compact {\n    align-items: stretch;\n    flex-direction: column;" in css_response.text
-    assert "border-top: 1px solid var(--line)" in css_response.text
-    assert "max-height: 180px" in css_response.text
-    assert "min-height: 72px" in css_response.text
     assert js_response.status_code == 200
-    assert "fetchJson" in js_response.text
-    assert "buildCitationIndex" in js_response.text
-    assert "renderSectionCitations" in js_response.text
-    assert "/api/cv/extract" in js_response.text
-    assert "data-delete-report-id" in js_response.text
-    assert "aria-label=\"Eliminar informe" in js_response.text
-    assert r"\u00bfEliminar todo el historial? Esta acci\u00f3n no se puede deshacer." in js_response.text
-    assert 'fetchJson("/api/reports", { method: "DELETE" })' in js_response.text
-    assert 'fetchJson("/api/chat"' in js_response.text
-    assert "active_report_id" in js_response.text
-    assert "scopeLabelText" in js_response.text
-    assert "updateChatState" in js_response.text
-    assert "renderRagStatusChip" in js_response.text
-    assert "active_report_pending_index" in js_response.text
-    assert "Chat listo" in js_response.text
-    assert ".meta-chip.rag-indexing" in css_response.text
-    assert "justify-self: center" in css_response.text
-    assert "showError(payload.error?.message || \"No se pudo generar el informe.\");\n        loadHistory();" in js_response.text
-    assert ".report-nav" in css_response.text
-    assert "position: sticky" in css_response.text
-    assert ".evidence-section" in css_response.text
-    assert ".confidence-high" in css_response.text
-    assert ".suggestion-item.needs-confirmation" in css_response.text
-    assert "env(safe-area-inset-top)" in css_response.text
-    assert "@media (pointer: coarse)" in css_response.text
-    assert ".quiet-button" in css_response.text
-    assert "renderClaimMeta" not in js_response.text
-    assert "Evidencia:" not in js_response.text
-    assert "renderReportNavigation" in js_response.text
-    assert "renderSectionClaims" not in js_response.text
-    assert "Ver evidencia y criterios" not in js_response.text
-    assert "confidenceBadge" in js_response.text
-    assert "Evidencia limitada" in js_response.text
-    assert "Informaci\\u00f3n parcial" not in js_response.text
-    assert "Sugerencias asistidas por IA" in js_response.text
-    assert "Agregar solo si es cierto" in js_response.text
-    assert "copyAdaptedDraft" in js_response.text
-    assert "navigator.clipboard.writeText" in js_response.text
-    assert "if (els.loadingState.classList.contains(\"hidden\"))" in js_response.text
-    assert "job_description: jobDescription || null" in js_response.text
-    assert "used_job_description" in js_response.text
-    assert "updateJobDescriptionCount" in js_response.text
-    assert ".job-context" in css_response.text
-    assert ".meta-chip.cv-context" in css_response.text
-    assert "reportStatusLabel" in js_response.text
-    assert "Informe listo" in js_response.text
-    assert "Preparando chat" in js_response.text
-    assert "Estado de preparaci" in js_response.text
-    assert "RAG." not in js_response.text
+
+    css = css_response.text
+    js = js_response.text
+
+    # Full-height two-region layout, responsive drawer, and mobile comparison fallback.
+    assert "--sidebar-width: 284px" in css
+    assert "height: 100dvh" in css
+    assert "grid-template-columns: var(--sidebar-width) minmax(0, 1fr)" in css
+    assert ".conversation-transcript" in css
+    assert "overflow-y: auto" in css
+    assert ".composer-dock" in css
+    assert "env(safe-area-inset-bottom)" in css
+    assert "@media (max-width: 899px)" in css
+    assert ".sidebar-open .sidebar" in css
+    assert "@media (max-width: 639px)" in css
+    assert ".comparison-table" in css
+    assert ".comparison-mobile" in css
+    assert ".cv-workspace" in css
+
+    # Safety, accessibility, and long-content resilience.
+    assert "overflow-wrap: anywhere" in css
+    assert ":focus-visible" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    assert "@media (pointer: coarse)" in css
+    assert "linear-gradient" not in css
+    assert "scrollbar-width" not in css
+
+    # Conversations use REST/SSE; fixture data and browser persistence are absent.
+    assert "seedConversations" not in js
+    assert "seedCVs" not in js
+    assert "dataSource" in js
+    assert "listConversations" in js
+    assert '"/api/conversations"' in js
+    assert "/messages`" in js
+    assert "/api/task-runs/" in js
+    assert "new EventSource" in js
+    assert "pollActiveTaskState" in js
+    assert "resumeTask" in js
+    assert "renderPauseRequest" in js
+    assert "renderComparisonArtifact" in js
+    assert "retryFailedTask" in js
+    assert "retryTask(taskId)" in js
+    assert "data-retry-task" in js
+    assert "syncRetryCountdown" in js
+    assert "data-retry-at" in js
+    assert "clarification.required" in js
+    assert "approval.required" in js
+    assert "artifact.created" in js
+    assert "await refreshActiveConversation();" in js
+    assert "Last-Event-ID" not in js
+    assert "listLegacyReports" in js
+    assert '"/api/reports?limit=20"' in js
+    assert "getLegacyReport" in js
+    assert "/api/research" not in js
+    assert "/api/chat" not in js
+    assert "/api/cv/extract" not in js
+    assert "localStorage" not in js
+    assert "URL.createObjectURL" not in js
+    assert "URL.revokeObjectURL" not in js
+
+    # Persistent chat, progress, legacy reports, and deferred CV state have render paths.
+    for renderer in (
+        "renderLiveProgress",
+        "renderTaskState",
+        "renderLegacyReportArtifact",
+        "renderCVWorkspace",
+    ):
+        assert renderer in js
+
+    assert "requestSubmit" in js
+    assert "showConfirmation" in js
+    assert "showRenameDialog" in js
+    assert "safeUrl" in js
+    assert "escapeHtml" in js
+    assert "Respuesta local" not in js
+    assert "Generación con DeepSeek" in js
+    assert "Disponible en la próxima etapa" in js
+    assert "Guardado" in js

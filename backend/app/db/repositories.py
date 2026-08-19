@@ -75,7 +75,7 @@ class ReportRepository:
             status=ReportStatus.pending.value,
             language="es-AR",
             warnings_json="[]",
-            metadata_json=json.dumps({"llm_provider": "gemini"}),
+            metadata_json=json.dumps({"llm_provider": "deepseek"}),
             created_at=now,
             updated_at=now,
         )

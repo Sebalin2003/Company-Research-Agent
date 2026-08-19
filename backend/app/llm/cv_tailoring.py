@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from google import genai
-from google.genai import types
 from pydantic import ValidationError
 
 from backend.app.domain.cv import CandidateSignals
@@ -17,7 +15,7 @@ from backend.app.domain.reports import (
     WarningSchema,
     WarningSeverity,
 )
-from backend.app.llm.gemini import extract_json_object, short_error
+from backend.app.llm.deepseek import DeepSeekClient, extract_json_object, short_error
 from backend.app.llm.synthesizer import SynthesisError
 
 
@@ -33,20 +31,20 @@ Todo texto visible debe estar en espanol.
 """
 
 
-class GeminiCVTailoringService:
+class DeepSeekCVTailoringService:
     def __init__(
         self,
         api_key: str,
         model: str,
         client: Any | None = None,
         max_output_tokens: int = 4000,
-        timeout_ms: int = 60_000,
+        timeout_seconds: int = 60,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.client = client
         self.max_output_tokens = max_output_tokens
-        self.timeout_ms = timeout_ms
+        self.timeout_seconds = timeout_seconds
 
     def build(
         self,
@@ -59,16 +57,17 @@ class GeminiCVTailoringService:
         include_adapted_cv_draft: bool,
     ) -> CVTailoringSchema:
         if not self.api_key:
-            raise SynthesisError("GEMINI_API_KEY is required.")
+            raise SynthesisError("DEEPSEEK_API_KEY is required.")
 
-        client = self.client or genai.Client(
+        client = self.client or DeepSeekClient(
             api_key=self.api_key,
-            http_options=types.HttpOptions(timeout=self.timeout_ms),
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
         )
         try:
-            response = client.models.generate_content(
-                model=self.model,
-                contents=build_cv_tailoring_prompt(
+            response = client.generate_json(
+                CV_TAILORING_SYSTEM_PROMPT,
+                build_cv_tailoring_prompt(
                     company_name,
                     signals,
                     cv_evidence_lines,
@@ -77,21 +76,17 @@ class GeminiCVTailoringService:
                     report,
                     include_adapted_cv_draft,
                 ),
-                config=types.GenerateContentConfig(
-                    system_instruction=CV_TAILORING_SYSTEM_PROMPT,
-                    temperature=0.2,
-                    max_output_tokens=self.max_output_tokens,
-                    response_mime_type="application/json",
-                    response_schema=CVTailoringSchema,
-                ),
+                CVTailoringSchema,
+                temperature=0.2,
+                max_tokens=self.max_output_tokens,
             )
         except Exception as exc:
-            raise SynthesisError("Gemini CV tailoring request failed.") from exc
+            raise SynthesisError("DeepSeek CV tailoring request failed.") from exc
 
         try:
             tailoring = parse_cv_tailoring_response(response)
         except SynthesisError as exc:
-            raise SynthesisError(f"Gemini CV tailoring output was invalid: {short_error(exc)}") from exc
+            raise SynthesisError(f"DeepSeek CV tailoring output was invalid: {short_error(exc)}") from exc
         return sanitize_cv_tailoring(tailoring, include_adapted_cv_draft)
 
 
@@ -142,26 +137,25 @@ def build_cv_tailoring_prompt(
 
 
 def parse_cv_tailoring_response(response: Any) -> CVTailoringSchema:
-    parsed = getattr(response, "parsed", None)
-    if isinstance(parsed, CVTailoringSchema):
-        return parsed
-    if isinstance(parsed, dict):
-        raw = parsed
+    if isinstance(response, CVTailoringSchema):
+        return response
+    if isinstance(response, dict):
+        raw = response
     else:
-        text = getattr(response, "text", None)
+        text = getattr(response, "content", None)
         if not text:
-            raise SynthesisError("Gemini response did not include text content.")
+            raise SynthesisError("DeepSeek response did not include text content.")
         try:
             raw = json.loads(text)
         except json.JSONDecodeError:
             try:
                 raw = json.loads(extract_json_object(text))
             except json.JSONDecodeError as exc:
-                raise SynthesisError("Gemini response content was not valid JSON.") from exc
+                raise SynthesisError("DeepSeek response content was not valid JSON.") from exc
     try:
         return CVTailoringSchema.model_validate(raw)
     except ValidationError as exc:
-        raise SynthesisError("Gemini CV tailoring response did not match schema.") from exc
+        raise SynthesisError("DeepSeek CV tailoring response did not match schema.") from exc
 
 
 def sanitize_cv_tailoring(

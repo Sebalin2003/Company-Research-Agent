@@ -27,8 +27,8 @@ from backend.app.domain.reports import (
     WarningSchema,
     WarningSeverity,
 )
-from backend.app.llm.cv_tailoring import GeminiCVTailoringService, fallback_warning
-from backend.app.llm.gemini import GeminiReportSynthesizer
+from backend.app.llm.cv_tailoring import DeepSeekCVTailoringService, fallback_warning
+from backend.app.llm.deepseek import DeepSeekReportSynthesizer
 from backend.app.llm.synthesizer import ReportSynthesizer, SynthesisError, SynthesisRequest
 from backend.app.research.content_extractor import HttpContentExtractor
 from backend.app.research.pipeline import ResearchPipeline, ResearchPipelineResult
@@ -208,7 +208,7 @@ class MockReportBuilder:
                 title="Resumen ejecutivo",
                 summary=(
                     f"Informe simulado para {report.company.name}. "
-                    "Este contenido valida el flujo tecnico antes de integrar busqueda real y Gemini."
+                    "Este contenido valida el flujo tecnico antes de integrar busqueda real y DeepSeek."
                 ),
                 claims=[
                     ClaimSchema(
@@ -268,8 +268,8 @@ class MockReportBuilder:
             warnings=warnings,
             metadata=ReportMetadataSchema(
                 search_provider=self.settings.search_provider,
-                llm_provider="gemini",
-                llm_model=self.settings.gemini_model,
+                llm_provider="deepseek",
+                llm_model=self.settings.deepseek_model,
                 source_count=len(sources),
                 evidence_count=len(evidence),
                 used_cv=include_cv,
@@ -286,7 +286,7 @@ class RealReportBuilder:
         settings: Settings,
         research_pipeline: ResearchPipeline,
         synthesizer: ReportSynthesizer,
-        cv_tailoring_service: GeminiCVTailoringService | None = None,
+        cv_tailoring_service: DeepSeekCVTailoringService | None = None,
     ) -> None:
         self.settings = settings
         self.research_pipeline = research_pipeline
@@ -375,8 +375,8 @@ class RealReportBuilder:
                 "metadata": synthesized.metadata.model_copy(
                     update={
                         "search_provider": self.settings.search_provider,
-                        "llm_provider": "gemini",
-                        "llm_model": self.settings.gemini_model,
+                        "llm_provider": "deepseek",
+                        "llm_model": self.settings.deepseek_model,
                         "source_count": len(synthesized.sources),
                         "evidence_count": len(synthesized.evidence),
                         "used_cv": include_cv,
@@ -415,9 +415,10 @@ class RealReportBuilder:
             include_adapted_cv_draft=include_adapted_cv_draft,
             job_signals=job_signals,
         )
-        service = self.cv_tailoring_service or GeminiCVTailoringService(
-            api_key=self.settings.gemini_api_key or "",
-            model=self.settings.gemini_model,
+        service = self.cv_tailoring_service or DeepSeekCVTailoringService(
+            api_key=self.settings.deepseek_api_key or "",
+            model=self.settings.deepseek_model,
+            timeout_seconds=self.settings.deepseek_timeout_seconds,
         )
         try:
             return service.build(
@@ -458,15 +459,15 @@ def build_report_builder(settings: Settings) -> ReportBuilder:
             extract_protected_domains=settings.research_extract_protected_domains,
             max_extract_urls_per_topic=settings.research_max_extract_urls_per_topic,
         )
-        synthesizer = GeminiReportSynthesizer(
-            api_key=settings.gemini_api_key or "",
-            model=settings.gemini_model,
-            timeout_ms=settings.gemini_timeout_ms,
+        synthesizer = DeepSeekReportSynthesizer(
+            api_key=settings.deepseek_api_key or "",
+            model=settings.deepseek_model,
+            timeout_seconds=settings.deepseek_timeout_seconds,
         )
-        cv_tailoring_service = GeminiCVTailoringService(
-            api_key=settings.gemini_api_key or "",
-            model=settings.gemini_model,
-            timeout_ms=settings.gemini_timeout_ms,
+        cv_tailoring_service = DeepSeekCVTailoringService(
+            api_key=settings.deepseek_api_key or "",
+            model=settings.deepseek_model,
+            timeout_seconds=settings.deepseek_timeout_seconds,
         )
         return RealReportBuilder(settings, research_pipeline, synthesizer, cv_tailoring_service)
     raise ValueError(f"Search provider no soportado: {settings.search_provider}")
@@ -553,7 +554,7 @@ def build_fallback_report(
     if has_evidence:
         summary = (
             f"Informe de respaldo para {report.company.name}. "
-            "La busqueda real encontro fuentes, pero la sintesis con Gemini no devolvio JSON valido."
+            "La busqueda real encontro fuentes, pero la sintesis con DeepSeek no devolvio JSON valido."
         )
 
     sections = [
@@ -591,8 +592,8 @@ def build_fallback_report(
         warnings=warnings,
         metadata=ReportMetadataSchema(
             search_provider=settings.search_provider,
-            llm_provider="gemini",
-            llm_model=settings.gemini_model,
+            llm_provider="deepseek",
+            llm_model=settings.deepseek_model,
             source_count=len(sources),
             evidence_count=len(evidence),
             generation_duration_ms=0,
@@ -607,7 +608,7 @@ def fallback_warning_message(synthesis_error: str | None) -> str:
             "Se muestra un informe limitado sin inventar datos."
         )
     message = (
-        "Gemini no genero un informe estructurado valido. "
+        "DeepSeek no genero un informe estructurado valido. "
         "Se muestra un informe de respaldo basado en evidencia recolectada."
     )
     if not synthesis_error:

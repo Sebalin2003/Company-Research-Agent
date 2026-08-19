@@ -12,8 +12,10 @@ ENV_FILE = PROJECT_ROOT / ".env"
 class Settings:
     database_url: str = "sqlite:///./enterprise_research_agent.db"
     environment: str = "development"
+    deepseek_api_key: str | None = None
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_timeout_seconds: int = 60
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-3.1-flash-lite"
     gemini_embedding_model: str = "gemini-embedding-2"
     gemini_embedding_dimensions: int = 768
     gemini_timeout_ms: int = 60_000
@@ -31,6 +33,10 @@ class Settings:
     research_max_extract_urls: int = 12
     research_extract_protected_domains: bool = False
     research_max_extract_urls_per_topic: int = 2
+    agent_max_model_turns: int = 12
+    agent_max_searches: int = 6
+    agent_max_inspections: int = 10
+    agent_max_elapsed_seconds: int = 180
 
 
 def get_settings() -> Settings:
@@ -38,8 +44,12 @@ def get_settings() -> Settings:
     return Settings(
         database_url=os.getenv("DATABASE_URL", Settings.database_url),
         environment=os.getenv("APP_ENV", Settings.environment),
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY"),
+        deepseek_model=os.getenv("DEEPSEEK_MODEL", Settings.deepseek_model),
+        deepseek_timeout_seconds=int(
+            os.getenv("DEEPSEEK_TIMEOUT_SECONDS", str(Settings.deepseek_timeout_seconds))
+        ),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
-        gemini_model=os.getenv("GEMINI_MODEL", Settings.gemini_model),
         gemini_embedding_model=os.getenv(
             "GEMINI_EMBEDDING_MODEL", Settings.gemini_embedding_model
         ),
@@ -100,6 +110,18 @@ def get_settings() -> Settings:
                 "RESEARCH_MAX_EXTRACT_URLS_PER_TOPIC",
                 str(Settings.research_max_extract_urls_per_topic),
             )
+        ),
+        agent_max_model_turns=int(
+            os.getenv("AGENT_MAX_MODEL_TURNS", str(Settings.agent_max_model_turns))
+        ),
+        agent_max_searches=int(
+            os.getenv("AGENT_MAX_SEARCHES", str(Settings.agent_max_searches))
+        ),
+        agent_max_inspections=int(
+            os.getenv("AGENT_MAX_INSPECTIONS", str(Settings.agent_max_inspections))
+        ),
+        agent_max_elapsed_seconds=int(
+            os.getenv("AGENT_MAX_ELAPSED_SECONDS", str(Settings.agent_max_elapsed_seconds))
         ),
     )
 

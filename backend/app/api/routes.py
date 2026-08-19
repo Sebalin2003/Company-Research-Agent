@@ -1,18 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, Query, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.api.errors import api_error
 from backend.app.api.schemas import (
     ChatCitation,
     ChatRequest,
     ChatResponse,
+    ComparisonArtifactResponse,
     CompanyReportsResponse,
     CompanySummary,
     CompletedReportResponse,
+    ConversationCreatedResponse,
+    ConversationCreateRequest,
+    ConversationDetailResponse,
+    ConversationListResponse,
+    ConversationMessageAcceptedResponse,
+    ConversationMessageRequest,
+    ConversationMessageResponse,
+    ConversationArtifactResponse,
+    ConversationSummaryResponse,
+    ConversationUpdateRequest,
     CVExtractResponse,
     DeleteAllReportsResponse,
     DeleteCVDataResponse,
@@ -29,15 +43,30 @@ from backend.app.api.schemas import (
     ResearchAcceptedResponse,
     ResearchRequest,
     RunningReportResponse,
+    TaskCancelResponse,
+    TaskResumeRequest,
+    TaskResumeResponse,
+    TaskRunResponse,
 )
 from backend.app.core.config import get_settings
 from backend.app.core.time import utc_now
 from backend.app.db import models
-from backend.app.db.repositories import CompanyRepository, ReportRepository
+from backend.app.db.conversation_repository import (
+    ACTIVE_TASK_STATUSES,
+    TERMINAL_TASK_STATUSES,
+    ConversationRepository,
+)
+from backend.app.db.repositories import (
+    CompanyRepository,
+    ReportRepository,
+    safe_json_dict,
+    safe_json_list,
+)
 from backend.app.db.session import get_db
 from backend.app.domain.reports import ReportStatus
 from backend.app.llm.synthesizer import SynthesisError
 from backend.app.services.cv_file_extractor import CVExtractionError, extract_cv_text
+from backend.app.services.conversation_tasks import run_local_conversation_task
 from backend.app.services.rag import RAGChatCitation, RAGChatResult, RAGChatService, choose_scope
 from backend.app.services.rag_indexing import backfill_missing_report_embeddings
 from backend.app.services.report_chat import ReportChatService
@@ -45,6 +74,403 @@ from backend.app.services.research_service import run_mock_generation_task
 
 
 router = APIRouter(prefix="/api")
+
+
+@router.post(
+    "/conversations",
+    response_model=ConversationCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_conversation(
+    request: ConversationCreateRequest,
+    db: Session = Depends(get_db),
+):
+    conversation = ConversationRepository(db).create(request.title)
+    db.commit()
+    return ConversationCreatedResponse(
+        conversation_id=conversation.id,
+        title=conversation.title,
+        created_at=conversation.created_at.isoformat(),
+    )
+
+
+@router.get("/conversations", response_model=ConversationListResponse)
+def list_conversations(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    repo = ConversationRepository(db)
+    conversations = repo.list(query=q, limit=limit, offset=offset)
+    return ConversationListResponse(
+        items=[conversation_summary(repo, conversation) for conversation in conversations],
+        pagination=Pagination(limit=limit, offset=offset, total=repo.count(q)),
+    )
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
+    repo = ConversationRepository(db)
+    conversation = require_conversation(repo, conversation_id)
+    return conversation_detail(repo, conversation)
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationSummaryResponse)
+def update_conversation(
+    conversation_id: str,
+    request: ConversationUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    repo = ConversationRepository(db)
+    conversation = require_conversation(repo, conversation_id)
+    repo.rename(conversation, request.title)
+    db.commit()
+    return conversation_summary(repo, conversation)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_conversation(conversation_id: str, db: Session = Depends(get_db)) -> Response:
+    repo = ConversationRepository(db)
+    conversation = require_conversation(repo, conversation_id)
+    repo.delete(conversation)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages",
+    response_model=ConversationMessageAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_conversation_message(
+    conversation_id: str,
+    request: ConversationMessageRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    repo = ConversationRepository(db)
+    conversation = require_conversation(repo, conversation_id)
+    if repo.active_task(conversation.id):
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            "conversation_busy",
+            "La conversación ya tiene una tarea en curso.",
+            {"conversation_id": conversation.id},
+        )
+    retry_at = repo.provider_retry_at()
+    if retry_at:
+        raise api_error(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "provider_cooldown_active",
+            "DeepSeek alcanzó temporalmente su límite. Esperá a que termine la cuenta regresiva.",
+            {"retry_at": retry_at},
+        )
+
+    report_repo = ReportRepository(db)
+    for attachment in request.attachments:
+        if attachment.type == "cv":
+            raise api_error(
+                status.HTTP_400_BAD_REQUEST,
+                "cv_library_unavailable",
+                "La biblioteca persistente de CV estará disponible en la próxima etapa.",
+            )
+        if not report_repo.get_by_id(attachment.artifact_id):
+            raise api_error(
+                status.HTTP_400_BAD_REQUEST,
+                "invalid_attachment",
+                "El informe adjunto no existe o ya no está disponible.",
+                {"artifact_id": attachment.artifact_id},
+            )
+
+    event_cursor = repo.latest_event(conversation.id)
+    message = repo.add_message(
+        conversation,
+        role="user",
+        content=request.content,
+        status="completed",
+    )
+    if conversation.title == "Nueva conversación":
+        repo.rename(conversation, title_from_message(request.content))
+    for attachment in request.attachments:
+        repo.add_report_attachment(conversation, message, attachment.artifact_id)
+    attached_report_ids = [
+        attachment.artifact_id for attachment in request.attachments if attachment.type == "report"
+    ]
+    if attached_report_ids:
+        active_context = safe_json_dict(conversation.active_context_json)
+        active_context["active_report_ids"] = list(dict.fromkeys(attached_report_ids))
+        repo.update_active_context(conversation, active_context)
+    settings = get_settings()
+    task = repo.create_task(
+        conversation,
+        message,
+        budget={
+            "model_turns": settings.agent_max_model_turns,
+            "searches": settings.agent_max_searches,
+            "inspections": settings.agent_max_inspections,
+            "elapsed_seconds": settings.agent_max_elapsed_seconds,
+            "extension_used": False,
+        },
+    )
+    db.commit()
+
+    background_tasks.add_task(run_local_conversation_task, task.id, db.get_bind())
+    return ConversationMessageAcceptedResponse(
+        message_id=message.id,
+        task_run_id=task.id,
+        status=task.status,
+        events_url=(
+            f"/api/conversations/{conversation.id}/events"
+            f"?after_event_id={event_cursor.id if event_cursor else 0}"
+        ),
+    )
+
+
+@router.get("/conversations/{conversation_id}/events")
+async def stream_conversation_events(
+    conversation_id: str,
+    after_event_id: int | None = Query(default=None, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    db: Session = Depends(get_db),
+):
+    repo = ConversationRepository(db)
+    require_conversation(repo, conversation_id)
+    cursor = parse_event_cursor(after_event_id, last_event_id)
+    if cursor:
+        event = repo.get_event(cursor)
+        if not event or event.conversation_id != conversation_id:
+            raise api_error(
+                status.HTTP_400_BAD_REQUEST,
+                "invalid_event_cursor",
+                "El punto de reanudación de eventos no es válido para esta conversación.",
+                {"event_id": cursor},
+            )
+
+    stream_session = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
+
+    async def event_stream():
+        last_sent = cursor
+        last_activity = time.monotonic()
+        while True:
+            with stream_session() as stream_db:
+                stream_repo = ConversationRepository(stream_db)
+                events = stream_repo.list_events(conversation_id, last_sent)
+                for event in events:
+                    last_sent = event.id
+                    last_activity = time.monotonic()
+                    yield format_sse_event(event)
+
+                active_task = stream_repo.active_task(conversation_id)
+                if not active_task and not events:
+                    break
+                if (
+                    active_task
+                    and active_task.status
+                    in {"needs_clarification", "awaiting_approval", "awaiting_review"}
+                    and not events
+                ):
+                    break
+                if active_task and time.monotonic() - last_activity >= 15:
+                    heartbeat = stream_repo.add_event(
+                        active_task,
+                        "heartbeat",
+                        {"task_run_id": active_task.id, "status": active_task.status},
+                    )
+                    stream_db.commit()
+                    last_sent = heartbeat.id
+                    last_activity = time.monotonic()
+                    yield format_sse_event(heartbeat)
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/task-runs/{task_run_id}/cancel", response_model=TaskCancelResponse)
+def cancel_conversation_task(task_run_id: str, db: Session = Depends(get_db)):
+    repo = ConversationRepository(db)
+    task = repo.get_task(task_run_id)
+    if not task:
+        raise api_error(
+            status.HTTP_404_NOT_FOUND,
+            "task_not_found",
+            "No se encontró la tarea solicitada.",
+            {"task_run_id": task_run_id},
+        )
+    if task.status in TERMINAL_TASK_STATUSES:
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            "task_not_cancellable",
+            "La tarea ya terminó y no puede cancelarse.",
+            {"task_run_id": task.id, "status": task.status},
+        )
+
+    repo.update_task(task, "cancelled", "user_cancelled")
+    response_message_id = safe_json_dict(task.working_state_json).get("response_message_id")
+    response_message = (
+        db.get(models.ConversationMessage, response_message_id) if response_message_id else None
+    )
+    if response_message and response_message.status == "streaming":
+        response_message.status = "cancelled"
+        response_message.content = "Cancelaste la respuesta del agente antes de que terminara."
+        response_message.completed_at = utc_now()
+    repo.add_event(task, "task.cancelled", {"task_run_id": task.id, "status": "cancelled"})
+    db.commit()
+    return TaskCancelResponse(task_run_id=task.id, status=task.status)
+
+
+@router.post(
+    "/task-runs/{task_run_id}/resume",
+    response_model=TaskResumeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def resume_conversation_task(
+    task_run_id: str,
+    request: TaskResumeRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    repo = ConversationRepository(db)
+    task = repo.get_task(task_run_id)
+    if not task:
+        raise api_error(
+            status.HTTP_404_NOT_FOUND,
+            "task_not_found",
+            "No se encontró la tarea solicitada.",
+            {"task_run_id": task_run_id},
+        )
+    expected_status = (
+        "needs_clarification" if request.response_type == "clarification" else "awaiting_approval"
+    )
+    if task.status != expected_status:
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            "task_not_resumable",
+            "La tarea no está esperando ese tipo de respuesta.",
+            {"task_run_id": task.id, "status": task.status},
+        )
+
+    cursor = repo.latest_event(task.conversation_id)
+    conversation = repo.get(task.conversation_id)
+    if not conversation:
+        raise api_error(status.HTTP_404_NOT_FOUND, "conversation_not_found", "La conversación ya no existe.")
+    working_state = safe_json_dict(task.working_state_json)
+    if request.response_type == "clarification":
+        response_text = request.content or ", ".join(request.selected_option_ids)
+        repo.add_message(conversation, role="user", content=response_text, status="completed")
+        working_state["clarification_response"] = {
+            "content": request.content,
+            "selected_option_ids": request.selected_option_ids,
+        }
+    else:
+        budget = safe_json_dict(task.budget_json)
+        if request.decision == "approved":
+            if budget.get("extension_used"):
+                raise api_error(
+                    status.HTTP_409_CONFLICT,
+                    "budget_extension_already_used",
+                    "La ampliación de presupuesto ya fue utilizada.",
+                )
+            budget.update(
+                {
+                    "model_turns": int(budget.get("model_turns", 0)) + 6,
+                    "searches": int(budget.get("searches", 0)) + 3,
+                    "inspections": int(budget.get("inspections", 0)) + 5,
+                    "elapsed_seconds": int(budget.get("elapsed_seconds", 0)) + 120,
+                    "extension_used": True,
+                }
+            )
+            task.budget_json = json.dumps(budget, ensure_ascii=False)
+        else:
+            working_state["force_finalize"] = True
+    task.working_state_json = json.dumps(working_state, ensure_ascii=False)
+    task.pause_reason_json = None
+    repo.update_task(task, "pending")
+    db.commit()
+    background_tasks.add_task(run_local_conversation_task, task.id, db.get_bind())
+    return TaskResumeResponse(
+        task_run_id=task.id,
+        status=task.status,
+        events_url=(
+            f"/api/conversations/{task.conversation_id}/events"
+            f"?after_event_id={cursor.id if cursor else 0}"
+        ),
+    )
+
+
+@router.post(
+    "/task-runs/{task_run_id}/retry",
+    response_model=TaskResumeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_conversation_task(
+    task_run_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    repo = ConversationRepository(db)
+    task = repo.get_task(task_run_id)
+    if not task:
+        raise api_error(
+            status.HTTP_404_NOT_FOUND,
+            "task_not_found",
+            "No se encontró la tarea solicitada.",
+            {"task_run_id": task_run_id},
+        )
+    if task.status != "failed":
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            "task_not_retryable",
+            "Solo se pueden reintentar tareas interrumpidas.",
+            {"task_run_id": task.id, "status": task.status},
+        )
+    pause = safe_json_dict(task.pause_reason_json)
+    retry_at = str(pause.get("retry_at") or "")
+    if retry_at and utc_now().isoformat() < retry_at:
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            "retry_cooldown_active",
+            "DeepSeek todavía está en espera. Reintentá cuando termine la cuenta regresiva.",
+            {"task_run_id": task.id, "retry_at": retry_at},
+        )
+    cursor = repo.latest_event(task.conversation_id)
+    task.pause_reason_json = None
+    repo.update_task(task, "pending")
+    db.commit()
+    background_tasks.add_task(run_local_conversation_task, task.id, db.get_bind())
+    return TaskResumeResponse(
+        task_run_id=task.id,
+        status=task.status,
+        events_url=(
+            f"/api/conversations/{task.conversation_id}/events"
+            f"?after_event_id={cursor.id if cursor else 0}"
+        ),
+    )
+
+
+@router.get("/comparisons/{comparison_id}", response_model=ComparisonArtifactResponse)
+def get_comparison_artifact(comparison_id: str, db: Session = Depends(get_db)):
+    comparison = ConversationRepository(db).get_comparison(comparison_id)
+    if not comparison:
+        raise api_error(
+            status.HTTP_404_NOT_FOUND,
+            "comparison_not_found",
+            "La comparación solicitada no existe o ya fue eliminada.",
+        )
+    return ComparisonArtifactResponse(
+        comparison_id=comparison.id,
+        title=comparison.title,
+        report_ids=safe_json_list(comparison.report_ids_json),
+        dimensions=safe_json_list(comparison.dimensions_json),
+        payload=safe_json_dict(comparison.payload_json),
+        citations=safe_json_list(comparison.citations_json),
+        warnings=safe_json_list(comparison.warnings_json),
+        created_at=comparison.created_at.isoformat(),
+    )
 
 
 @router.post("/cv/extract", response_model=CVExtractResponse)
@@ -176,7 +602,7 @@ def answer_report_chat(
         raise api_error(
             status.HTTP_502_BAD_GATEWAY,
             "chat_provider_failed",
-            "No se pudo responder la pregunta con Gemini. Intentalo nuevamente.",
+            "No se pudo responder la pregunta con DeepSeek. Intentalo nuevamente.",
             {"reason": str(exc)[:300]},
         ) from exc
 
@@ -246,7 +672,7 @@ def answer_global_chat(
         raise api_error(
             status.HTTP_502_BAD_GATEWAY,
             "chat_provider_failed",
-            "No se pudo responder la pregunta con Gemini. Intentalo nuevamente.",
+            "No se pudo responder la pregunta con DeepSeek. Intentalo nuevamente.",
             {"reason": str(exc)[:300]},
         ) from exc
 
@@ -291,7 +717,7 @@ def answer_global_chat_from_active_report(
         raise api_error(
             status.HTTP_502_BAD_GATEWAY,
             "chat_provider_failed",
-            "No se pudo responder la pregunta con Gemini. Intentalo nuevamente.",
+            "No se pudo responder la pregunta con DeepSeek. Intentalo nuevamente.",
             {"reason": str(exc)[:300]},
         ) from exc
 
@@ -458,6 +884,135 @@ def chat_citations(sources: list, source_ids: list[str]) -> list[ChatCitation]:
             )
         )
     return citations
+
+
+def require_conversation(
+    repo: ConversationRepository, conversation_id: str
+) -> models.Conversation:
+    conversation = repo.get(conversation_id)
+    if not conversation:
+        raise api_error(
+            status.HTTP_404_NOT_FOUND,
+            "conversation_not_found",
+            "No se encontró la conversación solicitada.",
+            {"conversation_id": conversation_id},
+        )
+    return conversation
+
+
+def title_from_message(content: str) -> str:
+    cleaned = " ".join(content.split())
+    return cleaned if len(cleaned) <= 42 else f"{cleaned[:41].rstrip()}…"
+
+
+def conversation_summary(
+    repo: ConversationRepository, conversation: models.Conversation
+) -> ConversationSummaryResponse:
+    messages = repo.list_messages(conversation.id)
+    latest_task = repo.latest_task(conversation.id)
+    preview = messages[-1].content[:120] if messages else None
+    return ConversationSummaryResponse(
+        conversation_id=conversation.id,
+        title=conversation.title,
+        status=latest_task.status if latest_task else "ready",
+        last_message_preview=preview,
+        created_at=conversation.created_at.isoformat(),
+        updated_at=conversation.updated_at.isoformat(),
+    )
+
+
+def conversation_detail(
+    repo: ConversationRepository, conversation: models.Conversation
+) -> ConversationDetailResponse:
+    messages = repo.list_messages(conversation.id)
+    artifacts = repo.list_artifacts(conversation.id)
+    latest_task = repo.latest_task(conversation.id)
+    latest_event = repo.latest_event(conversation.id)
+    return ConversationDetailResponse(
+        conversation_id=conversation.id,
+        title=conversation.title,
+        summary=conversation.summary,
+        active_context=safe_json_dict(conversation.active_context_json),
+        messages=[
+            ConversationMessageResponse(
+                message_id=message.id,
+                role=message.role,
+                content=message.content,
+                status=message.status,
+                citations=safe_json_list(message.citations_json),
+                created_at=message.created_at.isoformat(),
+                completed_at=message.completed_at.isoformat()
+                if message.completed_at
+                else None,
+            )
+            for message in messages
+        ],
+        artifacts=[
+            ConversationArtifactResponse(
+                artifact_link_id=artifact.id,
+                message_id=artifact.message_id,
+                type=artifact.artifact_type,
+                artifact_id=artifact.artifact_id,
+                relationship_type=artifact.relationship_type,
+            )
+            for artifact in artifacts
+        ],
+        current_task=TaskRunResponse(
+            task_run_id=latest_task.id,
+            task_type=latest_task.task_type,
+            status=latest_task.status,
+            stopping_reason=latest_task.stopping_reason,
+            pause=(
+                safe_json_dict(latest_task.pause_reason_json)
+                if latest_task.pause_reason_json
+                else None
+            ),
+            usage=safe_json_dict(latest_task.usage_json),
+            created_at=latest_task.created_at.isoformat(),
+            updated_at=latest_task.updated_at.isoformat(),
+            completed_at=latest_task.completed_at.isoformat()
+            if latest_task.completed_at
+            else None,
+        )
+        if latest_task
+        else None,
+        last_event_id=latest_event.id if latest_event else None,
+        created_at=conversation.created_at.isoformat(),
+        updated_at=conversation.updated_at.isoformat(),
+    )
+
+
+def parse_event_cursor(after_event_id: int | None, last_event_id: str | None) -> int:
+    if after_event_id is not None:
+        return after_event_id
+    if not last_event_id:
+        return 0
+    try:
+        cursor = int(last_event_id)
+    except ValueError as exc:
+        raise api_error(
+            status.HTTP_400_BAD_REQUEST,
+            "invalid_event_cursor",
+            "El identificador del último evento no es válido.",
+            {"event_id": last_event_id},
+        ) from exc
+    if cursor < 0:
+        raise api_error(
+            status.HTTP_400_BAD_REQUEST,
+            "invalid_event_cursor",
+            "El identificador del último evento no es válido.",
+            {"event_id": last_event_id},
+        )
+    return cursor
+
+
+def format_sse_event(event: models.TaskEvent) -> str:
+    payload = safe_json_dict(event.result_summary_json)
+    return (
+        f"id: {event.id}\n"
+        f"event: {event.event_type}\n"
+        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
 
 
 def rag_chat_citations(citations: list[RAGChatCitation]) -> list[ChatCitation]:
