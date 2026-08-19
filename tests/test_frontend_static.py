@@ -12,7 +12,7 @@ def test_conversational_frontend_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=38" in response.text
+    assert "/static/app.js?v=39" in response.text
     assert "/static/styles.css?v=24" in response.text
     assert "viewport-fit=cover" in response.text
 
@@ -111,6 +111,7 @@ def test_conversational_frontend_assets_are_served() -> None:
     assert "/api/task-runs/" in js
     assert "new EventSource" in js
     assert "pollActiveTaskState" in js
+    assert "events?after_event_id=${cursor}" in js
     assert "resumeTask" in js
     assert "renderPauseRequest" in js
     assert "renderComparisonArtifact" in js

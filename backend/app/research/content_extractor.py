@@ -43,7 +43,7 @@ class HttpContentExtractor:
         if response.status_code >= 400:
             return None
 
-        html = response.text
+        html = response.text[:1_000_000]
         extracted = trafilatura.extract(html) or fallback_text_from_html(html)
         text = " ".join((extracted or "").split())
         if not text:

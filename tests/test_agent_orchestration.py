@@ -278,6 +278,51 @@ def test_decision_turn_forces_function_mode_and_repairs_one_missing_call(db_sess
     }
 
 
+def test_respond_tool_requests_the_complete_validated_answer() -> None:
+    respond = next(
+        item for item in AgentOrchestrator.function_tools()
+        if item["function"]["name"] == "respond"
+    )
+
+    assert respond["function"]["parameters"]["required"] == [
+        "answer",
+        "answer_type",
+        "claims",
+        "warnings",
+    ]
+    finish = next(
+        item for item in AgentOrchestrator.function_tools()
+        if item["function"]["name"] == "finish_research"
+    )
+    assert finish["function"]["parameters"]["properties"]["output_type"]["enum"] == [
+        "report"
+    ]
+
+
+def test_compact_context_keeps_evidence_after_long_conversation(db_session: Session) -> None:
+    conversation, task = create_task(db_session, "Investigá Acme")
+    repo = ConversationRepository(db_session)
+    for _ in range(12):
+        repo.add_message(conversation, role="user", content="x" * 3000, status="completed")
+    state = AgentState(
+        goal="Investigá Acme",
+        evidence=[
+            AgentEvidence(
+                id="evidence-must-remain",
+                source_id="source-1",
+                topic="general",
+                claim="Acme publicó una vacante.",
+                excerpt="e" * 1200,
+            )
+        ],
+    )
+
+    context = AgentOrchestrator(db_session, settings()).build_context(task, state)
+
+    assert "evidence-must-remain" in context
+    assert len(context) < 24_000
+
+
 def test_parallel_tool_calls_are_serialized_to_one_controlled_action(
     db_session: Session,
 ) -> None:

@@ -42,7 +42,8 @@ beneficios, entrevistas o informes deben ser grounded y citar IDs de evidencia d
 No uses conocimiento previo del modelo como evidencia. No inventes fuentes ni datos. Las herramientas de CV
 no están disponibles. search_web busca, inspect_page inspecciona solo resultados obtenidos, review_evidence
 revisa cobertura, retrieve_reports recupera informes, compare_reports crea una comparación y finish_research
-crea un informe o cierra la investigación. No describas razonamiento privado."""
+crea un informe durable. Para cerrar una investigación con una respuesta normal, usá respond directamente.
+No describas razonamiento privado."""
 
 GENERAL_GUIDANCE_RE = re.compile(
     r"\b(consejos?|recomendaciones? generales?|c[oó]mo mejorar|c[oó]mo preparar|qu[eé] es|"
@@ -519,14 +520,19 @@ class AgentOrchestrator:
         conversation = self.repo.get(task.conversation_id)
         messages = self.repo.list_messages(task.conversation_id)[-12:]
         artifacts = self.repo.list_artifacts(task.conversation_id)
+        task_context = state.model_dump(mode="json")
+        for source in task_context["sources"]:
+            source["snippet"] = source["snippet"][:400]
+        for evidence in task_context["evidence"]:
+            evidence["excerpt"] = evidence["excerpt"][:500]
         context = {
             "conversation_summary": conversation.summary if conversation else None,
-            "messages": [{"role": item.role, "content": item.content[:3000]} for item in messages],
+            "task": task_context,
+            "messages": [{"role": item.role, "content": item.content[:1000]} for item in messages],
             "active_context": safe_json_dict(conversation.active_context_json) if conversation else {},
             "artifacts": [
                 {"type": item.artifact_type, "id": item.artifact_id} for item in artifacts[-12:]
             ],
-            "task": state.model_dump(mode="json"),
             "budget": safe_json_dict(task.budget_json),
             "usage": safe_json_dict(task.usage_json),
         }
@@ -1319,13 +1325,29 @@ class AgentOrchestrator:
 
 FUNCTION_SCHEMAS = {
     "respond": {
-        "description": "Selecciona la finalización. El backend generará y validará la respuesta completa antes de mostrarla.",
+        "description": "Finaliza con una respuesta completa que el backend validará antes de mostrarla.",
         "parameters": {
             "type": "object",
             "properties": {
+                "answer": {"type": "string"},
                 "answer_type": {"type": "string", "enum": ["guidance", "grounded"]},
+                "claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "evidence_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["text", "evidence_ids"],
+                    },
+                },
+                "warnings": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["answer_type"],
+            "required": ["answer", "answer_type", "claims", "warnings"],
         },
     },
     "request_clarification": {
@@ -1394,12 +1416,12 @@ FUNCTION_SCHEMAS = {
         },
     },
     "finish_research": {
-        "description": "Finaliza la investigación y opcionalmente crea un informe.",
+        "description": "Finaliza la investigación creando un informe durable. Para una respuesta normal, usa respond.",
         "parameters": {
             "type": "object",
             "properties": {
                 "company_name": {"type": "string"},
-                "output_type": {"type": "string", "enum": ["answer", "report"]},
+                "output_type": {"type": "string", "enum": ["report"]},
                 "stopping_reason": {"type": "string"},
                 "unresolved_topics": {"type": "array", "items": {"type": "string"}},
             },

@@ -506,7 +506,10 @@ async function openConversation(conversationId, { focusComposer = false } = {}) 
     await hydrateConversationArtifacts(state.activeConversation);
     state.previousConversationId = conversationId;
     renderActiveView();
-    if (["pending", "running"].includes(activeTask()?.status)) openEventStream(`/api/conversations/${encodeURIComponent(conversationId)}/events`);
+    if (["pending", "running"].includes(activeTask()?.status)) {
+      const cursor = state.activeConversation.last_event_id || 0;
+      openEventStream(`/api/conversations/${encodeURIComponent(conversationId)}/events?after_event_id=${cursor}`);
+    }
     if (focusComposer) requestAnimationFrame(() => els.composerText.focus());
   } catch (error) {
     showToast(error.message);
