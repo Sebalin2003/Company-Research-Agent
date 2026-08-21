@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.engine import Engine
@@ -18,7 +19,10 @@ from backend.app.core.time import utc_now
 from backend.app.db import models
 from backend.app.db.conversation_repository import ConversationRepository
 from backend.app.db.repositories import CompanyRepository, ReportRepository, safe_json_dict
+from backend.app.domain.cv import extract_candidate_signals, select_cv_evidence_lines
+from backend.app.domain.jobs import extract_job_signals, job_signal_payload, select_job_evidence_lines
 from backend.app.domain.reports import ConfidenceLevel, EvidenceTopic, ReportStatus, SourceType
+from backend.app.llm.cv_tailoring import DeepSeekCVTailoringService
 from backend.app.llm.deepseek import DeepSeekAPIError, DeepSeekClient, DeepSeekReportSynthesizer
 from backend.app.llm.synthesizer import SynthesisError, SynthesisRequest
 from backend.app.research.content_extractor import HttpContentExtractor
@@ -28,6 +32,7 @@ from backend.app.research.search_provider import FakeSearchProvider, TavilySearc
 from backend.app.research.types import ClassifiedEvidence, ExtractedContent, ScoredSource, SearchResult
 from backend.app.services.rag_indexing import schedule_report_embedding_task
 from backend.app.services.rag import GoogleEmbeddingService, rank_chunks
+from backend.app.services.cv_library import CVLibraryService
 
 
 SYSTEM_PROMPT = """Sos Radar Laboral, un asistente laboral conversacional en español.
@@ -39,11 +44,13 @@ Si una vacante o pasantía actual no tiene evidencia de una fuente oficial o car
 que no pudiste confirmarla oficialmente y agregá una advertencia.
 La orientación general puede ser guidance sin citas. Datos sobre empresas, mercado, salarios, vacantes,
 beneficios, entrevistas o informes deben ser grounded y citar IDs de evidencia disponibles.
-No uses conocimiento previo del modelo como evidencia. No inventes fuentes ni datos. Las herramientas de CV
-no están disponibles. search_web busca, inspect_page inspecciona solo resultados obtenidos, review_evidence
+No uses conocimiento previo del modelo como evidencia. No inventes fuentes ni datos. search_web busca,
+inspect_page inspecciona solo resultados obtenidos, review_evidence
 revisa cobertura, retrieve_reports recupera informes, compare_reports crea una comparación y finish_research
 crea un informe durable. Para cerrar una investigación con una respuesta normal, usá respond directamente.
-No describas razonamiento privado."""
+No describas razonamiento privado. Las herramientas de CV solo pueden usarse cuando el usuario pide
+usar o adaptar su CV, o cuando adjunta un CV o una descripción de puesto. En ese caso están disponibles
+get_cv_profile, analyze_job_description y prepare_cv_recommendations."""
 
 GENERAL_GUIDANCE_RE = re.compile(
     r"\b(consejos?|recomendaciones? generales?|c[oó]mo mejorar|c[oó]mo preparar|qu[eé] es|"
@@ -94,7 +101,12 @@ class AgentState(BaseModel):
     unresolved_topics: list[str] = Field(default_factory=list)
     generated_report_id: str | None = None
     generated_comparison_id: str | None = None
+    selected_cv_id: str | None = None
+    selected_cv_version_id: str | None = None
+    selected_job_description_id: str | None = None
+    recommendation_artifact_id: str | None = None
     clarification_response: dict[str, Any] | None = None
+    review_response: dict[str, Any] | None = None
     force_finalize: bool = False
     response_message_id: str | None = None
 
@@ -555,6 +567,9 @@ class AgentOrchestrator:
             "retrieve_reports": self.tool_retrieve_reports,
             "compare_reports": self.tool_compare_reports,
             "finish_research": self.tool_finish_research,
+            "get_cv_profile": self.tool_get_cv_profile,
+            "analyze_job_description": self.tool_analyze_job_description,
+            "prepare_cv_recommendations": self.tool_prepare_cv_recommendations,
         }
         handler = handlers.get(name)
         if not handler:
@@ -704,6 +719,215 @@ class AgentOrchestrator:
             "needs_clarification",
             "clarification.required",
             {"type": "clarification", "prompt": question, "options": options},
+        )
+
+    def tool_get_cv_profile(self, task, state, usage, arguments) -> ToolResult:
+        library = CVLibraryService(self.db, self.settings)
+        conversation = self.repo.get(task.conversation_id)
+        if not conversation:
+            raise AgentFailure("La conversación ya no existe.")
+        artifacts = self.repo.list_artifacts(task.conversation_id)
+        attached_ids = [
+            item.artifact_id
+            for item in artifacts
+            if item.message_id == task.trigger_message_id and item.artifact_type == "cv"
+        ]
+        context = safe_json_dict(conversation.active_context_json)
+        selected_ids = (state.clarification_response or {}).get("selected_option_ids") or []
+        requested = str(arguments.get("cv_id") or "")
+        candidate_id = requested or (attached_ids[-1] if attached_ids else "")
+        if not candidate_id:
+            candidate_id = next(
+                (item for item in selected_ids if library.get_cv(str(item))),
+                context.get("active_cv_id") or "",
+            )
+        cv = library.get_cv(str(candidate_id)) if candidate_id else library.default_or_only()
+        if not cv:
+            cvs = library.list_cvs()
+            if not cvs:
+                raise ValueError("No hay ningún CV guardado. Subí uno desde Mi CV o desde el compositor.")
+            self.pause(
+                task,
+                "needs_clarification",
+                "clarification.required",
+                {
+                    "type": "cv_selection",
+                    "prompt": "Hay varios CV guardados. ¿Cuál querés usar?",
+                    "options": [{"id": item.id, "label": item.display_name} for item in cvs],
+                },
+            )
+        version = library.current_version(cv)
+        signals = extract_candidate_signals(version.extracted_text)
+        lines = select_cv_evidence_lines(version.extracted_text, signals)
+        state.selected_cv_id = cv.id
+        state.selected_cv_version_id = version.id
+        context["active_cv_id"] = cv.id
+        context["active_cv_version_id"] = version.id
+        self.repo.update_active_context(conversation, context)
+        return ToolResult(
+            {
+                "ok": True,
+                "summary": f"Se recuperó {cv.display_name}.",
+                "cv_id": cv.id,
+                "cv_version_id": version.id,
+                "profile": json.loads(version.structured_profile_json or "{}"),
+                "evidence_lines": [
+                    {"id": f"cv_line_{index}", "text": line}
+                    for index, line in enumerate(lines, start=1)
+                ],
+            },
+            [],
+        )
+
+    def tool_analyze_job_description(self, task, state, usage, arguments) -> ToolResult:
+        conversation = self.repo.get(task.conversation_id)
+        if not conversation:
+            raise AgentFailure("La conversación ya no existe.")
+        artifacts = self.repo.list_artifacts(task.conversation_id)
+        attached_ids = [
+            item.artifact_id
+            for item in artifacts
+            if item.message_id == task.trigger_message_id and item.artifact_type == "job_description"
+        ]
+        context = safe_json_dict(conversation.active_context_json)
+        job_id = str(arguments.get("job_description_id") or "")
+        job_id = job_id or (attached_ids[-1] if attached_ids else "")
+        job_id = job_id or str(context.get("active_job_description_id") or "")
+        job = self.db.get(models.JobDescription, job_id) if job_id else None
+        if not job and (state.clarification_response or {}).get("content"):
+            messages = self.repo.list_messages(task.conversation_id)
+            user_message = next((item for item in reversed(messages) if item.role == "user"), None)
+            if user_message:
+                job = CVLibraryService(self.db, self.settings).create_job_description(
+                    conversation,
+                    user_message,
+                    "Descripción del puesto",
+                    str(state.clarification_response["content"]),
+                )
+        if not job or job.conversation_id != task.conversation_id:
+            self.pause(
+                task,
+                "needs_clarification",
+                "clarification.required",
+                {
+                    "type": "job_description",
+                    "prompt": "Pegá la descripción del puesto que querés analizar.",
+                    "options": [],
+                },
+            )
+        signals = extract_job_signals(job.raw_text)
+        lines = select_job_evidence_lines(job.raw_text, signals)
+        state.selected_job_description_id = job.id
+        context["active_job_description_id"] = job.id
+        self.repo.update_active_context(conversation, context)
+        return ToolResult(
+            {
+                "ok": True,
+                "summary": "Se analizó la descripción del puesto.",
+                "job_description_id": job.id,
+                "signals": job_signal_payload(signals),
+                "evidence_lines": [
+                    {"id": f"job_line_{index}", "text": line}
+                    for index, line in enumerate(lines, start=1)
+                ],
+            },
+            [],
+        )
+
+    def tool_prepare_cv_recommendations(self, task, state, usage, arguments) -> ToolResult:
+        if not state.selected_cv_id:
+            self.tool_get_cv_profile(task, state, usage, arguments)
+        library = CVLibraryService(self.db, self.settings)
+        cv = library.get_cv(state.selected_cv_id or "")
+        version = library.get_version(cv.id, state.selected_cv_version_id or "") if cv else None
+        if not cv or not version:
+            raise ValueError("El CV seleccionado ya no está disponible.")
+        cv_signals = extract_candidate_signals(version.extracted_text)
+        cv_lines = select_cv_evidence_lines(version.extracted_text, cv_signals)
+
+        job = (
+            self.db.get(models.JobDescription, state.selected_job_description_id)
+            if state.selected_job_description_id
+            else None
+        )
+        if not job and arguments.get("require_job_description", True):
+            self.tool_analyze_job_description(task, state, usage, arguments)
+            job = self.db.get(models.JobDescription, state.selected_job_description_id)
+        job_signals = extract_job_signals(job.raw_text) if job else None
+        job_lines = select_job_evidence_lines(job.raw_text, job_signals) if job and job_signals else []
+        report = None
+        report_id = str(arguments.get("report_id") or "")
+        if report_id:
+            stored_report = self.report_repo.get_by_id(report_id)
+            if stored_report and stored_report.status == ReportStatus.completed.value:
+                report = self.report_repo.to_structured_report(stored_report)
+        tailoring = DeepSeekCVTailoringService(
+            api_key=self.settings.deepseek_api_key or "",
+            model=self.settings.deepseek_model,
+            client=self.get_client(),
+            timeout_seconds=self.settings.deepseek_timeout_seconds,
+        ).build(
+            company_name=str(arguments.get("company_name") or "la oportunidad"),
+            signals=cv_signals,
+            cv_evidence_lines=cv_lines,
+            job_signals=job_signals,
+            job_evidence_lines=job_lines,
+            report=report,
+            include_adapted_cv_draft=False,
+        )
+        allowed_ids = {
+            *(f"cv_line_{index}" for index in range(1, len(cv_lines) + 1)),
+            *(f"job_line_{index}" for index in range(1, len(job_lines) + 1)),
+            *(item.id for item in state.evidence),
+        }
+        for suggestion in tailoring.change_suggestions:
+            if not suggestion.evidence_ids or not set(suggestion.evidence_ids).issubset(allowed_ids):
+                raise ValueError("DeepSeek generó una recomendación sin evidencia válida.")
+
+        now = utc_now()
+        artifact = models.CVRecommendationArtifact(
+            id=str(uuid4()),
+            conversation_id=task.conversation_id,
+            task_run_id=task.id,
+            cv_id=cv.id,
+            cv_version_id=version.id,
+            job_description_id=job.id if job else None,
+            status="awaiting_review",
+            payload_json=tailoring.model_dump_json(),
+            review_json="{}",
+            draft_text=version.extracted_text,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(artifact)
+        conversation = self.repo.get(task.conversation_id)
+        if not conversation:
+            raise AgentFailure("La conversación ya no existe.")
+        self.repo.add_artifact_link(
+            conversation,
+            artifact_type="cv_recommendation",
+            artifact_id=artifact.id,
+            relationship_type="generated",
+        )
+        state.recommendation_artifact_id = artifact.id
+        self.save_state(task, state)
+        refs = [{"type": "cv_recommendation", "artifact_id": artifact.id}]
+        self.repo.add_event(
+            task,
+            "artifact.created",
+            {"task_run_id": task.id, "type": "cv_recommendation", "artifact_id": artifact.id},
+            artifact_refs=refs,
+        )
+        self.pause(
+            task,
+            "awaiting_review",
+            "review.required",
+            {
+                "type": "cv_recommendation",
+                "artifact_id": artifact.id,
+                "prompt": "Revisá las recomendaciones antes de guardar cambios en tu CV.",
+                "suggestion_count": len(tailoring.change_suggestions),
+            },
         )
 
     def tool_search_web(self, task, state, usage, arguments) -> ToolResult:
@@ -1273,6 +1497,9 @@ class AgentOrchestrator:
     def tool_label(name: str) -> str:
         return {
             "respond": "Preparando respuesta",
+            "get_cv_profile": "Recuperando el CV seleccionado",
+            "analyze_job_description": "Analizando la descripción del puesto",
+            "prepare_cv_recommendations": "Preparando recomendaciones para el CV",
             "request_clarification": "Solicitando aclaración",
             "search_web": "Buscando fuentes públicas",
             "inspect_page": "Inspeccionando una fuente",
@@ -1292,6 +1519,15 @@ class AgentOrchestrator:
             "finish_research": {"company_name", "output_type", "stopping_reason", "unresolved_topics"},
             "request_clarification": {"question", "options"},
             "respond": {"answer_type", "warnings"},
+            "get_cv_profile": {"cv_id"},
+            "analyze_job_description": {"job_description_id"},
+            "prepare_cv_recommendations": {
+                "cv_id",
+                "job_description_id",
+                "report_id",
+                "company_name",
+                "require_job_description",
+            },
         }.get(name, set())
         return {key: value for key, value in arguments.items() if key in allowed}
 
@@ -1413,6 +1649,33 @@ FUNCTION_SCHEMAS = {
                 "dimensions": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["report_ids"],
+        },
+    },
+    "get_cv_profile": {
+        "description": "Recupera el CV adjunto, activo o predeterminado usando solo evidencia seleccionada.",
+        "parameters": {
+            "type": "object",
+            "properties": {"cv_id": {"type": "string"}},
+        },
+    },
+    "analyze_job_description": {
+        "description": "Analiza la descripción de puesto adjunta o activa.",
+        "parameters": {
+            "type": "object",
+            "properties": {"job_description_id": {"type": "string"}},
+        },
+    },
+    "prepare_cv_recommendations": {
+        "description": "Crea recomendaciones de CV basadas en evidencia y pausa para revisión humana.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cv_id": {"type": "string"},
+                "job_description_id": {"type": "string"},
+                "report_id": {"type": "string"},
+                "company_name": {"type": "string"},
+                "require_job_description": {"type": "boolean"},
+            },
         },
     },
     "finish_research": {

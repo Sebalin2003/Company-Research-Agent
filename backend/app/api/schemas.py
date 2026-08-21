@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any, Literal
 
@@ -218,6 +218,76 @@ class RAGReindexResponse(BaseModel):
 JsonObject = dict[str, Any]
 
 
+class CVVersionSummaryResponse(BaseModel):
+    version_id: str
+    version_number: int
+    created_from: str
+    original_filename: str | None = None
+    content_type: str | None = None
+    file_size: int
+    has_file: bool
+    created_at: str
+
+
+class CVSummaryResponse(BaseModel):
+    cv_id: str
+    display_name: str
+    is_default: bool
+    current_version_id: str
+    current_version: CVVersionSummaryResponse
+    created_at: str
+    updated_at: str
+
+
+class CVListResponse(BaseModel):
+    items: list[CVSummaryResponse]
+
+
+class CVVersionDetailResponse(CVVersionSummaryResponse):
+    extracted_text: str
+    structured_profile: JsonObject
+
+
+class CVDetailResponse(CVSummaryResponse):
+    extracted_text: str
+    structured_profile: JsonObject
+    versions: list[CVVersionSummaryResponse]
+
+
+class CVUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    is_default: bool | None = None
+    extracted_text: str | None = Field(default=None, max_length=50_000)
+    source_version_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self):
+        if self.display_name is None and self.is_default is None and self.extracted_text is None:
+            raise ValueError("La actualización del CV no contiene cambios.")
+        if self.display_name is not None:
+            self.display_name = self.display_name.strip()
+        if self.extracted_text is not None:
+            self.extracted_text = self.extracted_text.strip()
+            if not self.extracted_text:
+                raise ValueError("El CV no puede estar vacío.")
+        return self
+
+
+class CVRecommendationResponse(BaseModel):
+    artifact_id: str
+    conversation_id: str
+    task_run_id: str
+    cv_id: str
+    cv_version_id: str
+    job_description_id: str | None = None
+    status: str
+    payload: JsonObject
+    review: JsonObject
+    draft_text: str
+    created_at: str
+    updated_at: str
+
+
 class ConversationCreateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=120)
 
@@ -308,16 +378,31 @@ class ConversationDetailResponse(BaseModel):
 
 
 class ConversationAttachmentRequest(BaseModel):
-    type: Literal["report", "cv"]
-    artifact_id: str = Field(min_length=1, max_length=200)
+    type: Literal["report", "cv", "job_description"]
+    artifact_id: str | None = Field(default=None, max_length=200)
+    content: str | None = Field(default=None, max_length=20_000)
+    title: str | None = Field(default=None, max_length=200)
 
     @field_validator("artifact_id")
     @classmethod
-    def artifact_id_must_not_be_blank(cls, value: str) -> str:
+    def artifact_id_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("El identificador del adjunto no puede estar vacío.")
         return cleaned
+
+    @model_validator(mode="after")
+    def validate_attachment(self):
+        if self.type in {"report", "cv"} and not self.artifact_id:
+            raise ValueError("El identificador del adjunto no puede estar vacío.")
+        if self.type == "job_description":
+            self.content = (self.content or "").strip()
+            if not self.content:
+                raise ValueError("La descripción del puesto no puede estar vacía.")
+            self.title = (self.title or "Descripción del puesto").strip()
+        return self
 
 
 class ConversationMessageRequest(BaseModel):
@@ -346,10 +431,14 @@ class TaskCancelResponse(BaseModel):
 
 
 class TaskResumeRequest(BaseModel):
-    response_type: Literal["clarification", "approval"]
+    response_type: Literal["clarification", "approval", "review"]
     decision: Literal["approved", "rejected"] | None = None
     content: str | None = Field(default=None, max_length=20_000)
     selected_option_ids: list[str] = Field(default_factory=list, max_length=10)
+    artifact_id: str | None = None
+    review_decisions: list[JsonObject] = Field(default_factory=list, max_length=100)
+    draft_text: str | None = Field(default=None, max_length=50_000)
+    save_as_cv_version: bool = False
 
     @model_validator(mode="after")
     def validate_response(self):
@@ -360,6 +449,8 @@ class TaskResumeRequest(BaseModel):
             if not content and not self.selected_option_ids:
                 raise ValueError("La aclaración requiere una respuesta.")
             self.content = content or None
+        if self.response_type == "review" and not (self.artifact_id or "").strip():
+            raise ValueError("La revisión requiere un artefacto de recomendaciones.")
         return self
 
 

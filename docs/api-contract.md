@@ -33,6 +33,26 @@ Primary references:
 - Reports can be generated without CV input.
 - CV tailoring requires CV input.
 
+## Conversational and CV Library Contract (Implemented)
+
+Conversation messages accept a validated attachment union: `report` and `cv` use an existing `artifact_id`; `job_description` carries `content` and an optional `title`. Job descriptions are owned by their conversation and are persisted with the message.
+
+Persistent CV endpoints:
+
+- `POST /api/cvs`: multipart PDF/DOCX upload with optional `display_name`;
+- `GET /api/cvs`: metadata summaries only;
+- `GET /api/cvs/{cv_id}`: current editable text, structured signals, and versions;
+- `PATCH /api/cvs/{cv_id}`: rename, set default, or create a text-edit version;
+- `POST /api/cvs/{cv_id}/versions`: upload a replacement version;
+- `GET /api/cvs/{cv_id}/versions/{version_id}`: inspect historical text and signals;
+- `GET /api/cvs/{cv_id}/versions/{version_id}/file`: read an uploaded original;
+- `DELETE /api/cvs/{cv_id}/versions/{version_id}` and `DELETE /api/cvs/{cv_id}`: confirmed deletion;
+- `GET /api/cv-recommendations/{artifact_id}`: retrieve the durable draft and review state.
+
+`POST /api/task-runs/{task_run_id}/resume` accepts `response_type: "review"` with the recommendation `artifact_id`, one decision per suggestion, explicit truth confirmation for accepted `add_only_if_true` items, optional `draft_text`, and `save_as_cv_version`. Saving creates a text-only version and never changes an uploaded binary.
+
+Complete CV text is returned only by explicit CV detail/version endpoints. CV lists, conversation responses, task state, and SSE events contain metadata or artifact IDs only.
+
 ## Status Codes
 
 Use these status codes consistently:
@@ -98,7 +118,7 @@ For MVP, `POST /api/research` should return `202 Accepted` after creating the re
 
 ## Endpoints
 
-## `POST /api/cv/extract`
+## `POST /api/cv/extract` (Compatibility)
 
 Extracts CV text from a transient uploaded file.
 

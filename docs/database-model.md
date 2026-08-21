@@ -4,7 +4,7 @@
 
 This document defines the MVP database model for the company research agent.
 
-The database must support:
+The database supports:
 
 - saved company research reports;
 - auditable sources and evidence;
@@ -58,9 +58,23 @@ erDiagram
     personalized_preparations ||--o{ preparation_items : contains
     candidate_profiles ||--o| cv_tailorings : may_have
     cv_tailorings ||--o{ cv_tailoring_suggestions : contains
+    conversations ||--o{ job_descriptions : owns
+    conversations ||--o{ cv_recommendation_artifacts : owns
+    stored_cvs ||--o{ cv_versions : versions
+    stored_cvs ||--o{ cv_recommendation_artifacts : informs
 ```
 
 ## Tables
+
+### Phase 3 Persistent CV Entities (Implemented)
+
+`stored_cvs` stores display name, default selection, current version ID, and timestamps. `cv_versions` stores monotonic version number, generated managed-storage key, original filename/content type/size/SHA-256 when a binary exists, extracted text, structured signals, creation source, and source-version ID. Text edits have no binary and uploaded originals remain immutable.
+
+`job_descriptions` stores conversation/message ownership, title, raw local text, deterministic signals, and creation time. Conversation deletion cascades to these rows.
+
+`cv_recommendation_artifacts` stores the exact CV/version and optional job-description IDs, evidence-linked suggestions, editable draft, review decisions, status, and timestamps. Conversation or CV deletion removes owned/derived recommendation artifacts; deleting a conversation never deletes an attached stored CV.
+
+Conversation artifact links refer to CVs, job descriptions, and recommendation artifacts by opaque ID without copying their raw content. Generated storage keys are resolved under `CV_STORAGE_DIR`; user-supplied absolute paths are never stored.
 
 ### `companies`
 

@@ -3,3 +3,4 @@
 __pycache__/
 *.py[cod]
 enterprise_research_agent.db
+data/cvs/

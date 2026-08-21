@@ -329,6 +329,12 @@ class Conversation(Base):
     comparisons: Mapped[list[ComparisonArtifact]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"
     )
+    job_descriptions: Mapped[list[JobDescription]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
+    cv_recommendations: Mapped[list[CVRecommendationArtifact]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
 
 
 class ConversationMessage(Base):
@@ -433,3 +439,82 @@ class ComparisonArtifact(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     conversation: Mapped[Conversation] = relationship(back_populates="comparisons")
+
+
+class StoredCV(Base):
+    __tablename__ = "stored_cvs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    current_version_id: Mapped[str | None] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+    versions: Mapped[list[CVVersion]] = relationship(
+        back_populates="cv", cascade="all, delete-orphan"
+    )
+    recommendations: Mapped[list[CVRecommendationArtifact]] = relationship(
+        back_populates="cv", cascade="all, delete-orphan"
+    )
+
+
+class CVVersion(Base):
+    __tablename__ = "cv_versions"
+    __table_args__ = (UniqueConstraint("cv_id", "version_number"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    cv_id: Mapped[str] = mapped_column(ForeignKey("stored_cvs.id"), nullable=False, index=True)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(String, unique=True)
+    original_filename: Mapped[str | None] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(160))
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    file_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    extracted_text: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_profile_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_from: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    source_version_id: Mapped[str | None] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    cv: Mapped[StoredCV] = relationship(back_populates="versions")
+
+
+class JobDescription(Base):
+    __tablename__ = "job_descriptions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False, index=True
+    )
+    message_id: Mapped[str] = mapped_column(
+        ForeignKey("conversation_messages.id"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_signals_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="job_descriptions")
+
+
+class CVRecommendationArtifact(Base):
+    __tablename__ = "cv_recommendation_artifacts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False, index=True
+    )
+    task_run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    cv_id: Mapped[str] = mapped_column(ForeignKey("stored_cvs.id"), nullable=False, index=True)
+    cv_version_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    job_description_id: Mapped[str | None] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    review_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    draft_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="cv_recommendations")
+    cv: Mapped[StoredCV] = relationship(back_populates="recommendations")

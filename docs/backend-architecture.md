@@ -28,6 +28,8 @@ Primary references:
 
 ## API Execution Strategy
 
+The primary implemented flow is conversation-first: message submission persists a task, FastAPI `BackgroundTasks` runs a bounded DeepSeek tool loop, and `/api/conversations/{id}/events` replays persisted SSE events. The legacy report polling flow below remains supported for compatibility.
+
 Use an asynchronous report status flow.
 
 Recommendation:
@@ -84,6 +86,8 @@ backend/
       synthesizer.py
     services/
       __init__.py
+      agent_orchestrator.py
+      cv_library.py
       report_builder.py
       research_service.py
       validation.py
@@ -96,6 +100,14 @@ backend/
 ```
 
 ## Module Responsibilities
+
+### `app/services/cv_library.py`
+
+Owns PDF/DOCX validation and extraction, UUID storage keys under `CV_STORAGE_DIR`, atomic binary replacement, SHA-256 metadata, default selection, version lifecycle, job-description persistence, and review decisions. Uploaded originals are immutable; edits create text-only versions.
+
+### `app/services/agent_orchestrator.py`
+
+Exposes `get_cv_profile`, `analyze_job_description`, and `prepare_cv_recommendations` only for explicit CV-related requests. It sends DeepSeek structured signals plus selected CV/job lines, persists only artifact IDs and review status in task state, emits `artifact.created` then `review.required`, and pauses until the user reviews every suggestion.
 
 ### `app/main.py`
 
@@ -579,7 +591,7 @@ Cover:
 - No multi-tenant permissions.
 - No scraping behind login.
 - No scheduled report refreshes.
-- No CV file uploads unless explicitly added.
+- CV uploads are restricted to PDF/DOCX files in the managed local directory.
 - No DOCX/PDF export for adapted CV drafts unless explicitly added.
 
 ## Open Questions
@@ -587,5 +599,5 @@ Cover:
 - Which search provider should be implemented first?
 - Should background generation use FastAPI `BackgroundTasks` for MVP?
 - Should report generation failures be visible in the frontend history?
-- Should raw CV text be discarded immediately after candidate profile extraction?
+- Complete CV text remains local in version records and is excluded from general model context, logs, SSE, summaries, and embeddings.
 

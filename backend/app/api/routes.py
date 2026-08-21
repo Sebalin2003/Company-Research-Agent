@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
 import time
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, Query, Response, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, Query, Response, UploadFile, status
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.api.errors import api_error
@@ -28,6 +28,13 @@ from backend.app.api.schemas import (
     ConversationSummaryResponse,
     ConversationUpdateRequest,
     CVExtractResponse,
+    CVDetailResponse,
+    CVListResponse,
+    CVRecommendationResponse,
+    CVSummaryResponse,
+    CVUpdateRequest,
+    CVVersionDetailResponse,
+    CVVersionSummaryResponse,
     DeleteAllReportsResponse,
     DeleteCVDataResponse,
     DeleteReportResponse,
@@ -66,6 +73,12 @@ from backend.app.db.session import get_db
 from backend.app.domain.reports import ReportStatus
 from backend.app.llm.synthesizer import SynthesisError
 from backend.app.services.cv_file_extractor import CVExtractionError, extract_cv_text
+from backend.app.services.cv_library import (
+    CVLibraryError,
+    CVLibraryService,
+    profile_payload,
+    remove_managed_files,
+)
 from backend.app.services.conversation_tasks import run_local_conversation_task
 from backend.app.services.rag import RAGChatCitation, RAGChatResult, RAGChatService, choose_scope
 from backend.app.services.rag_indexing import backfill_missing_report_embeddings
@@ -168,14 +181,16 @@ def create_conversation_message(
         )
 
     report_repo = ReportRepository(db)
+    cv_service = CVLibraryService(db)
     for attachment in request.attachments:
-        if attachment.type == "cv":
+        if attachment.type == "cv" and not cv_service.get_cv(attachment.artifact_id or ""):
             raise api_error(
                 status.HTTP_400_BAD_REQUEST,
-                "cv_library_unavailable",
-                "La biblioteca persistente de CV estará disponible en la próxima etapa.",
+                "invalid_attachment",
+                "El CV adjunto no existe o ya no está disponible.",
+                {"artifact_id": attachment.artifact_id},
             )
-        if not report_repo.get_by_id(attachment.artifact_id):
+        if attachment.type == "report" and not report_repo.get_by_id(attachment.artifact_id or ""):
             raise api_error(
                 status.HTTP_400_BAD_REQUEST,
                 "invalid_attachment",
@@ -193,13 +208,48 @@ def create_conversation_message(
     if conversation.title == "Nueva conversación":
         repo.rename(conversation, title_from_message(request.content))
     for attachment in request.attachments:
-        repo.add_report_attachment(conversation, message, attachment.artifact_id)
+        if attachment.type == "report":
+            repo.add_report_attachment(conversation, message, attachment.artifact_id or "")
+        elif attachment.type == "cv":
+            repo.add_artifact_link(
+                conversation,
+                artifact_type="cv",
+                artifact_id=attachment.artifact_id or "",
+                relationship_type="attached",
+                message_id=message.id,
+            )
+        else:
+            job = cv_service.create_job_description(
+                conversation, message, attachment.title, attachment.content or ""
+            )
+            repo.add_artifact_link(
+                conversation,
+                artifact_type="job_description",
+                artifact_id=job.id,
+                relationship_type="attached",
+                message_id=message.id,
+            )
     attached_report_ids = [
         attachment.artifact_id for attachment in request.attachments if attachment.type == "report"
     ]
     if attached_report_ids:
         active_context = safe_json_dict(conversation.active_context_json)
         active_context["active_report_ids"] = list(dict.fromkeys(attached_report_ids))
+        repo.update_active_context(conversation, active_context)
+    attached_cv_ids = [
+        attachment.artifact_id for attachment in request.attachments if attachment.type == "cv"
+    ]
+    attached_job_ids = [
+        item.artifact_id
+        for item in repo.list_artifacts(conversation.id)
+        if item.message_id == message.id and item.artifact_type == "job_description"
+    ]
+    if attached_cv_ids or attached_job_ids:
+        active_context = safe_json_dict(conversation.active_context_json)
+        if attached_cv_ids:
+            active_context["active_cv_id"] = attached_cv_ids[-1]
+        if attached_job_ids:
+            active_context["active_job_description_id"] = attached_job_ids[-1]
         repo.update_active_context(conversation, active_context)
     settings = get_settings()
     task = repo.create_task(
@@ -343,9 +393,11 @@ def resume_conversation_task(
             "No se encontró la tarea solicitada.",
             {"task_run_id": task_run_id},
         )
-    expected_status = (
-        "needs_clarification" if request.response_type == "clarification" else "awaiting_approval"
-    )
+    expected_status = {
+        "clarification": "needs_clarification",
+        "approval": "awaiting_approval",
+        "review": "awaiting_review",
+    }[request.response_type]
     if task.status != expected_status:
         raise api_error(
             status.HTTP_409_CONFLICT,
@@ -366,6 +418,29 @@ def resume_conversation_task(
             "content": request.content,
             "selected_option_ids": request.selected_option_ids,
         }
+    elif request.response_type == "review":
+        artifact = db.get(models.CVRecommendationArtifact, request.artifact_id)
+        if not artifact or artifact.task_run_id != task.id:
+            raise api_error(
+                status.HTTP_400_BAD_REQUEST,
+                "invalid_cv_review",
+                "Las recomendaciones no pertenecen a esta tarea.",
+            )
+        try:
+            saved = CVLibraryService(db).review_recommendation(
+                artifact,
+                request.review_decisions,
+                request.draft_text,
+                request.save_as_cv_version,
+            )
+        except CVLibraryError as exc:
+            raise api_error(status.HTTP_400_BAD_REQUEST, exc.code, str(exc)) from exc
+        working_state["review_response"] = {
+            "artifact_id": artifact.id,
+            "status": artifact.status,
+            "saved_version_id": saved.id if saved else None,
+        }
+        working_state["force_finalize"] = True
     else:
         budget = safe_json_dict(task.budget_json)
         if request.decision == "approved":
@@ -471,6 +546,144 @@ def get_comparison_artifact(comparison_id: str, db: Session = Depends(get_db)):
         warnings=safe_json_list(comparison.warnings_json),
         created_at=comparison.created_at.isoformat(),
     )
+
+
+@router.post("/cvs", response_model=CVDetailResponse, status_code=status.HTTP_201_CREATED)
+async def create_stored_cv(
+    file: UploadFile = File(...),
+    display_name: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    service = CVLibraryService(db)
+    try:
+        cv, _ = service.create_upload(
+            filename=file.filename or "cv",
+            content_type=file.content_type,
+            content=await file.read(),
+            display_name=display_name,
+        )
+        db.commit()
+        return cv_detail_payload(service, cv)
+    except CVLibraryError as exc:
+        db.rollback()
+        raise api_error(status.HTTP_400_BAD_REQUEST, exc.code, str(exc)) from exc
+
+
+@router.get("/cvs", response_model=CVListResponse)
+def list_stored_cvs(db: Session = Depends(get_db)):
+    service = CVLibraryService(db)
+    return CVListResponse(items=[cv_summary_payload(service, cv) for cv in service.list_cvs()])
+
+
+@router.get("/cvs/{cv_id}", response_model=CVDetailResponse)
+def get_stored_cv(cv_id: str, db: Session = Depends(get_db)):
+    service = CVLibraryService(db)
+    cv = require_cv(service, cv_id)
+    return cv_detail_payload(service, cv)
+
+
+@router.patch("/cvs/{cv_id}", response_model=CVDetailResponse)
+def update_stored_cv(cv_id: str, request: CVUpdateRequest, db: Session = Depends(get_db)):
+    service = CVLibraryService(db)
+    cv = require_cv(service, cv_id)
+    try:
+        if request.display_name is not None:
+            cv.display_name = request.display_name
+            cv.updated_at = utc_now()
+        if request.is_default is True:
+            service.set_default(cv)
+        elif request.is_default is False:
+            cv.is_default = False
+            cv.updated_at = utc_now()
+        if request.extracted_text is not None:
+            if request.source_version_id and not service.get_version(cv.id, request.source_version_id):
+                raise CVLibraryError("cv_version_not_found", "La versión base del CV no existe.")
+            service.create_text_version(cv, request.extracted_text, request.source_version_id)
+        db.commit()
+        return cv_detail_payload(service, cv)
+    except CVLibraryError as exc:
+        db.rollback()
+        raise api_error(status.HTTP_400_BAD_REQUEST, exc.code, str(exc)) from exc
+
+
+@router.post("/cvs/{cv_id}/versions", response_model=CVDetailResponse, status_code=status.HTTP_201_CREATED)
+async def create_stored_cv_version(
+    cv_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    service = CVLibraryService(db)
+    cv = require_cv(service, cv_id)
+    try:
+        service.create_upload(
+            filename=file.filename or "cv",
+            content_type=file.content_type,
+            content=await file.read(),
+            cv=cv,
+        )
+        db.commit()
+        return cv_detail_payload(service, cv)
+    except CVLibraryError as exc:
+        db.rollback()
+        raise api_error(status.HTTP_400_BAD_REQUEST, exc.code, str(exc)) from exc
+
+
+@router.get("/cvs/{cv_id}/versions/{version_id}", response_model=CVVersionDetailResponse)
+def get_stored_cv_version(cv_id: str, version_id: str, db: Session = Depends(get_db)):
+    service = CVLibraryService(db)
+    require_cv(service, cv_id)
+    version = service.get_version(cv_id, version_id)
+    if not version:
+        raise api_error(status.HTTP_404_NOT_FOUND, "cv_version_not_found", "La versión del CV no existe.")
+    return cv_version_detail_payload(version)
+
+
+@router.get("/cvs/{cv_id}/versions/{version_id}/file")
+def get_stored_cv_file(cv_id: str, version_id: str, db: Session = Depends(get_db)):
+    service = CVLibraryService(db)
+    require_cv(service, cv_id)
+    version = service.get_version(cv_id, version_id)
+    if not version or not version.storage_key:
+        raise api_error(status.HTTP_404_NOT_FOUND, "cv_file_not_found", "Esta versión no tiene un archivo original.")
+    path = service.resolve_storage_key(version.storage_key)
+    if not path.is_file():
+        raise api_error(status.HTTP_404_NOT_FOUND, "cv_file_not_found", "El archivo original ya no está disponible.")
+    return FileResponse(path, media_type=version.content_type, filename=version.original_filename)
+
+
+@router.delete("/cvs/{cv_id}/versions/{version_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_stored_cv_version(cv_id: str, version_id: str, db: Session = Depends(get_db)):
+    service = CVLibraryService(db)
+    cv = require_cv(service, cv_id)
+    version = service.get_version(cv_id, version_id)
+    if not version:
+        raise api_error(status.HTTP_404_NOT_FOUND, "cv_version_not_found", "La versión del CV no existe.")
+    try:
+        paths = service.delete_version(cv, version)
+        db.commit()
+        remove_managed_files(paths)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except CVLibraryError as exc:
+        db.rollback()
+        raise api_error(status.HTTP_409_CONFLICT, exc.code, str(exc)) from exc
+
+
+@router.delete("/cvs/{cv_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_stored_cv(cv_id: str, db: Session = Depends(get_db)):
+    service = CVLibraryService(db)
+    cv = require_cv(service, cv_id)
+    paths = service.delete_cv(cv)
+    db.commit()
+    remove_managed_files(paths)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/cv-recommendations/{artifact_id}", response_model=CVRecommendationResponse)
+def get_cv_recommendation(artifact_id: str, db: Session = Depends(get_db)):
+    artifact = db.get(models.CVRecommendationArtifact, artifact_id)
+    if not artifact:
+        raise api_error(status.HTTP_404_NOT_FOUND, "cv_recommendation_not_found", "Las recomendaciones ya no están disponibles.")
+    return cv_recommendation_payload(artifact)
 
 
 @router.post("/cv/extract", response_model=CVExtractResponse)
@@ -903,6 +1116,74 @@ def require_conversation(
 def title_from_message(content: str) -> str:
     cleaned = " ".join(content.split())
     return cleaned if len(cleaned) <= 42 else f"{cleaned[:41].rstrip()}…"
+
+
+def require_cv(service: CVLibraryService, cv_id: str) -> models.StoredCV:
+    cv = service.get_cv(cv_id)
+    if not cv:
+        raise api_error(status.HTTP_404_NOT_FOUND, "cv_not_found", "El CV no existe o fue eliminado.")
+    return cv
+
+
+def cv_version_summary_payload(version: models.CVVersion) -> CVVersionSummaryResponse:
+    return CVVersionSummaryResponse(
+        version_id=version.id,
+        version_number=version.version_number,
+        created_from=version.created_from,
+        original_filename=version.original_filename,
+        content_type=version.content_type,
+        file_size=version.file_size,
+        has_file=bool(version.storage_key),
+        created_at=version.created_at.isoformat(),
+    )
+
+
+def cv_version_detail_payload(version: models.CVVersion) -> CVVersionDetailResponse:
+    return CVVersionDetailResponse(
+        **cv_version_summary_payload(version).model_dump(),
+        extracted_text=version.extracted_text,
+        structured_profile=profile_payload(version),
+    )
+
+
+def cv_summary_payload(service: CVLibraryService, cv: models.StoredCV) -> CVSummaryResponse:
+    current = service.current_version(cv)
+    return CVSummaryResponse(
+        cv_id=cv.id,
+        display_name=cv.display_name,
+        is_default=cv.is_default,
+        current_version_id=current.id,
+        current_version=cv_version_summary_payload(current),
+        created_at=cv.created_at.isoformat(),
+        updated_at=cv.updated_at.isoformat(),
+    )
+
+
+def cv_detail_payload(service: CVLibraryService, cv: models.StoredCV) -> CVDetailResponse:
+    current = service.current_version(cv)
+    return CVDetailResponse(
+        **cv_summary_payload(service, cv).model_dump(),
+        extracted_text=current.extracted_text,
+        structured_profile=profile_payload(current),
+        versions=[cv_version_summary_payload(item) for item in service.versions(cv.id)],
+    )
+
+
+def cv_recommendation_payload(artifact: models.CVRecommendationArtifact) -> CVRecommendationResponse:
+    return CVRecommendationResponse(
+        artifact_id=artifact.id,
+        conversation_id=artifact.conversation_id,
+        task_run_id=artifact.task_run_id,
+        cv_id=artifact.cv_id,
+        cv_version_id=artifact.cv_version_id,
+        job_description_id=artifact.job_description_id,
+        status=artifact.status,
+        payload=safe_json_dict(artifact.payload_json),
+        review=safe_json_dict(artifact.review_json),
+        draft_text=artifact.draft_text,
+        created_at=artifact.created_at.isoformat(),
+        updated_at=artifact.updated_at.isoformat(),
+    )
 
 
 def conversation_summary(

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light" />
     <title>Radar Laboral</title>
-    <link rel="stylesheet" href="/static/styles.css?v=24" />
+    <link rel="stylesheet" href="/static/styles.css?v=28" />
   </head>
   <body>
     <a class="skip-link" href="#conversationTranscript">Saltar a la conversaci&oacute;n</a>
@@ -92,15 +92,15 @@
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
                 </button>
                 <div class="floating-menu attachment-menu hidden" id="attachmentMenu" role="menu">
-                  <button type="button" role="menuitem" data-attachment-action="stored-cv" disabled title="Disponible en la pr&oacute;xima etapa">
+                  <button type="button" role="menuitem" data-attachment-action="stored-cv">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z" /><path d="M14 3v5h5" /></svg>
                     Adjuntar desde Mi CV
                   </button>
-                  <button type="button" role="menuitem" data-attachment-action="upload-cv" disabled title="Disponible en la pr&oacute;xima etapa">
+                  <button type="button" role="menuitem" data-attachment-action="upload-cv">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M8 8l4-4 4 4M5 15v5h14v-5" /></svg>
                     Subir nuevo CV
                   </button>
-                  <button type="button" role="menuitem" data-attachment-action="job" disabled title="Disponible en la pr&oacute;xima etapa">
+                  <button type="button" role="menuitem" data-attachment-action="job">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="2" /><path d="M9 7V5h6v2M4 12h16" /></svg>
                     Adjuntar descripci&oacute;n de puesto
                   </button>
@@ -151,6 +151,25 @@
       </form>
     </dialog>
 
+    <dialog class="app-dialog compact-dialog" id="cvSelectDialog" aria-labelledby="cvSelectDialogTitle">
+      <form method="dialog" id="cvSelectDialogForm">
+        <div class="dialog-heading">
+          <div>
+            <h2 id="cvSelectDialogTitle">Adjuntar CV guardado</h2>
+            <p>Eleg&iacute; el CV que DeepSeek puede usar en este mensaje.</p>
+          </div>
+        </div>
+        <label class="dialog-field">
+          CV
+          <select id="cvSelectInput"></select>
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary-button" value="cancel">Cancelar</button>
+          <button class="primary-button" id="confirmCVSelection" value="default">Adjuntar</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog class="app-dialog compact-dialog" id="renameDialog" aria-labelledby="renameDialogTitle">
       <form method="dialog" id="renameDialogForm">
         <div class="dialog-heading">
@@ -187,6 +206,6 @@
 
     <div class="toast-region" id="toastRegion" role="status" aria-live="polite"></div>
 
-    <script src="/static/app.js?v=39" defer></script>
+    <script src="/static/app.js?v=45" defer></script>
   </body>
 </html>

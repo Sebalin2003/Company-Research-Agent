@@ -12,8 +12,8 @@ def test_conversational_frontend_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=39" in response.text
-    assert "/static/styles.css?v=24" in response.text
+    assert "/static/app.js?v=45" in response.text
+    assert "/static/styles.css?v=28" in response.text
     assert "viewport-fit=cover" in response.text
 
     # Two-region conversational shell and accessible landmarks.
@@ -39,14 +39,15 @@ def test_conversational_frontend_index_is_served() -> None:
     assert 'data-attachment-action="upload-cv"' in response.text
     assert 'data-attachment-action="job"' in response.text
     assert 'data-attachment-action="report"' in response.text
-    assert response.text.count('title="Disponible en la pr&oacute;xima etapa"') == 3
+    assert 'title="Disponible en la pr&oacute;xima etapa"' not in response.text
     assert 'id="cvFileInput"' in response.text
     assert 'accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"' in response.text
 
-    # CV management and native dialogs are present without backend persistence claims.
+    # Persistent CV management and native dialogs are present.
     assert 'id="cvWorkspace"' in response.text
     assert 'aria-labelledby="cvWorkspaceTitle"' in response.text
     assert 'id="jobDialog"' in response.text
+    assert 'id="cvSelectDialog"' in response.text
     assert 'id="renameDialog"' in response.text
     assert 'id="confirmDialog"' in response.text
 
@@ -99,7 +100,14 @@ def test_conversational_frontend_assets_are_served() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in css
     assert "@media (pointer: coarse)" in css
     assert "linear-gradient" not in css
-    assert "scrollbar-width" not in css
+    assert ".conversation-nav::-webkit-scrollbar" in css
+    assert ".conversation-transcript::-webkit-scrollbar" in css
+    assert "scrollbar-width: thin" in css
+    assert ".chat-composer textarea:focus-visible" in css
+
+    # Sidebar rows are uncluttered and CV versions keep only useful actions.
+    assert "conversation-origin" not in js
+    assert '>Ver</button>' not in js
 
     # Conversations use REST/SSE; fixture data and browser persistence are absent.
     assert "seedConversations" not in js
@@ -135,12 +143,13 @@ def test_conversational_frontend_assets_are_served() -> None:
     assert "URL.createObjectURL" not in js
     assert "URL.revokeObjectURL" not in js
 
-    # Persistent chat, progress, legacy reports, and deferred CV state have render paths.
+    # Persistent chat, progress, legacy reports, and CV management have render paths.
     for renderer in (
         "renderLiveProgress",
         "renderTaskState",
         "renderLegacyReportArtifact",
-        "renderCVWorkspace",
+        "renderCVWorkspaceV3",
+        "renderCVRecommendationArtifact",
     ):
         assert renderer in js
 
@@ -151,5 +160,8 @@ def test_conversational_frontend_assets_are_served() -> None:
     assert "escapeHtml" in js
     assert "Respuesta local" not in js
     assert "Generación con DeepSeek" in js
-    assert "Disponible en la próxima etapa" in js
+    assert "Disponible en la próxima etapa" not in js
+    assert '"/api/cvs"' in js
+    assert '"review.required"' in js
+    assert "save_as_cv_version" in js
     assert "Guardado" in js

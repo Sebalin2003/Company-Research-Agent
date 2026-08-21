@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from typing import Any
@@ -26,6 +26,8 @@ No inventes experiencia, empleadores, fechas, herramientas, certificaciones, idi
 Cada sugerencia debe basarse en senales del CV, lineas seleccionadas del CV, requisitos seleccionados del puesto o evidencia del informe.
 Un requisito del puesto que no aparece en el CV es una brecha a confirmar, no experiencia del candidato.
 Si algo requiere datos que el CV no prueba, usa add_only_if_true y requires_user_confirmation=true.
+Para rewrite, suggested_text debe ser el reemplazo final exacto listo para pegar, no una instruccion como
+"reescribir", "destacar" o "adaptar". Para reorder y emphasize, explica la accion manual concreta.
 El borrador adaptado no debe incluir sugerencias add_only_if_true ni hechos no verificados.
 Todo texto visible debe estar en espanol.
 """
@@ -53,7 +55,7 @@ class DeepSeekCVTailoringService:
         cv_evidence_lines: list[str],
         job_signals: JobSignals | None,
         job_evidence_lines: list[str],
-        report: StructuredReportSchema,
+        report: StructuredReportSchema | None,
         include_adapted_cv_draft: bool,
     ) -> CVTailoringSchema:
         if not self.api_key:
@@ -96,7 +98,7 @@ def build_cv_tailoring_prompt(
     cv_evidence_lines: list[str],
     job_signals: JobSignals | None,
     job_evidence_lines: list[str],
-    report: StructuredReportSchema,
+    report: StructuredReportSchema | None,
     include_adapted_cv_draft: bool,
 ) -> str:
     payload = {
@@ -113,9 +115,15 @@ def build_cv_tailoring_prompt(
             "achievements": signals.achievements,
             "confidence": signals.confidence,
         },
-        "selected_cv_lines": cv_evidence_lines,
+        "selected_cv_lines": [
+            {"id": f"cv_line_{index}", "text": line}
+            for index, line in enumerate(cv_evidence_lines, start=1)
+        ],
         "job_signals": job_signal_payload(job_signals) if job_signals else None,
-        "selected_job_lines": job_evidence_lines,
+        "selected_job_lines": [
+            {"id": f"job_line_{index}", "text": line}
+            for index, line in enumerate(job_evidence_lines, start=1)
+        ],
         "report_evidence": [
             {
                 "id": item.id,
@@ -124,7 +132,7 @@ def build_cv_tailoring_prompt(
                 "excerpt": item.raw_text_excerpt,
                 "confidence": item.confidence.value,
             }
-            for item in report.evidence[:10]
+            for item in (report.evidence[:10] if report else [])
         ],
         "adapted_draft_requested": include_adapted_cv_draft,
     }

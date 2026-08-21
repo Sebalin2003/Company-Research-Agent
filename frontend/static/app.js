@@ -1,4 +1,4 @@
-const ACTIVE_TASK_STATUSES = new Set([
+﻿const ACTIVE_TASK_STATUSES = new Set([
   "pending",
   "running",
   "needs_clarification",
@@ -27,6 +27,13 @@ const state = {
   pendingConfirmation: null,
   searchTimer: null,
   retryTimer: null,
+  cvs: [],
+  selectedCVId: null,
+  cvDetail: null,
+  cvStatus: "loading",
+  cvUploadTarget: null,
+  cvViewedVersion: null,
+  pendingCVRename: null,
 };
 
 const els = {
@@ -65,13 +72,20 @@ const els = {
   confirmDialogMessage: document.querySelector("#confirmDialogMessage"),
   confirmAction: document.querySelector("#confirmAction"),
   toastRegion: document.querySelector("#toastRegion"),
+  cvFileInput: document.querySelector("#cvFileInput"),
+  jobDialog: document.querySelector("#jobDialog"),
+  jobDialogForm: document.querySelector("#jobDialogForm"),
+  jobDescriptionInput: document.querySelector("#jobDescriptionInput"),
+  cvSelectDialog: document.querySelector("#cvSelectDialog"),
+  cvSelectInput: document.querySelector("#cvSelectInput"),
+  confirmCVSelection: document.querySelector("#confirmCVSelection"),
 };
 
 const dataSource = {
   async request(path, options = {}) {
     const response = await fetch(path, {
       ...options,
-      headers: options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers,
+      headers: typeof options.body === "string" ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers,
     });
     if (response.status === 204) return null;
     const payload = await response.json().catch(() => ({}));
@@ -103,7 +117,12 @@ const dataSource = {
       method: "POST",
       body: JSON.stringify({
         content,
-        attachments: attachments.map((item) => ({ type: item.type, artifact_id: item.artifactId })),
+        attachments: attachments.map((item) => ({
+          type: item.type,
+          artifact_id: item.artifactId || null,
+          content: item.content || null,
+          title: item.title || null,
+        })),
       }),
     });
   },
@@ -128,6 +147,32 @@ const dataSource = {
   },
   getComparison(comparisonId) {
     return this.request(`/api/comparisons/${encodeURIComponent(comparisonId)}`);
+  },
+  listCVs() {
+    return this.request("/api/cvs");
+  },
+  getCV(cvId) {
+    return this.request(`/api/cvs/${encodeURIComponent(cvId)}`);
+  },
+  getCVVersion(cvId, versionId) {
+    return this.request(`/api/cvs/${encodeURIComponent(cvId)}/versions/${encodeURIComponent(versionId)}`);
+  },
+  updateCV(cvId, payload) {
+    return this.request(`/api/cvs/${encodeURIComponent(cvId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
+  uploadCV(file, cvId = null) {
+    const form = new FormData();
+    form.append("file", file);
+    return this.request(cvId ? `/api/cvs/${encodeURIComponent(cvId)}/versions` : "/api/cvs", { method: "POST", body: form });
+  },
+  deleteCV(cvId) {
+    return this.request(`/api/cvs/${encodeURIComponent(cvId)}`, { method: "DELETE" });
+  },
+  deleteCVVersion(cvId, versionId) {
+    return this.request(`/api/cvs/${encodeURIComponent(cvId)}/versions/${encodeURIComponent(versionId)}`, { method: "DELETE" });
+  },
+  getCVRecommendation(artifactId) {
+    return this.request(`/api/cv-recommendations/${encodeURIComponent(artifactId)}`);
   },
 };
 
@@ -236,6 +281,9 @@ function renderSidebar() {
   els.conversationNav.innerHTML = html;
   els.cvSidebarSummary.textContent = "Disponible próximamente";
   els.cvLibraryButton.classList.toggle("active", state.activeView === "cv");
+  els.cvSidebarSummary.textContent = state.cvs.length
+    ? `${state.cvs.length} CV${state.cvs.length === 1 ? "" : "s"} guardado${state.cvs.length === 1 ? "" : "s"}`
+    : "Sin CV guardados";
 }
 
 function renderConversationRow(item) {
@@ -247,7 +295,6 @@ function renderConversationRow(item) {
       <button class="conversation-open" type="button" data-conversation-id="${escapeHtml(item.conversation_id)}">
         ${icon("chat")}
         <span>${escapeHtml(item.title)}</span>
-        <small class="conversation-origin">${escapeHtml(statusLabel(item.status))}</small>
       </button>
       <div class="conversation-row-actions">
         <button class="mini-icon-button" type="button" data-conversation-menu="${escapeHtml(item.conversation_id)}" aria-label="Renombrar ${escapeHtml(item.title)}">${icon("more")}</button>
@@ -262,7 +309,6 @@ function renderLegacyRow(item) {
       <button class="conversation-open" type="button" data-legacy-report-id="${escapeHtml(item.report_id)}">
         ${icon("report")}
         <span>${escapeHtml(item.company.name)}</span>
-        <small class="conversation-origin">Guardado</small>
       </button>
     </div>`;
 }
@@ -280,7 +326,7 @@ function setOriginNotice(kind, label, text) {
 function renderActiveView({ scrollToBottom = false } = {}) {
   renderSidebar();
   if (state.activeView === "cv") {
-    renderCVWorkspace();
+    renderCVWorkspaceV3();
     return;
   }
   renderConversation({ scrollToBottom });
@@ -365,10 +411,16 @@ function reportName(reportId) {
   return state.legacyReports.find((item) => item.report_id === reportId)?.company.name || "Informe guardado";
 }
 
+function attachmentLabel(item) {
+  if (item.type === "cv") return state.cvs.find((cv) => cv.cv_id === item.artifact_id)?.display_name || "CV guardado";
+  if (item.type === "job_description") return "Descripción de puesto";
+  return reportName(item.artifact_id);
+}
+
 function renderMessage(message) {
   const attachments = artifactsForMessage(message.message_id);
   const attachmentHtml = attachments.length
-    ? `<div class="message-attachments">${attachments.map((item) => `<span class="inline-attachment">${icon("report")}${escapeHtml(reportName(item.artifact_id))}</span>`).join("")}</div>`
+    ? `<div class="message-attachments">${attachments.map((item) => `<span class="inline-attachment">${icon(item.type === "report" ? "report" : "file")}${escapeHtml(attachmentLabel(item))}</span>`).join("")}</div>`
     : "";
   if (message.role === "user") {
     return `<article class="message user" data-message-id="${escapeHtml(message.message_id)}"><div class="user-message-body"><div class="message-content">${formatText(message.content)}</div>${attachmentHtml}</div></article>`;
@@ -430,6 +482,7 @@ function renderGeneratedArtifacts(conversation) {
     if (payload.unavailable) return `<section class="evidence-warning" data-artifact-type="artifact-missing"><strong>Artefacto no disponible</strong><p>El contenido fue eliminado o no se pudo recuperar.</p></section>`;
     if (item.type === "report") return renderLegacyReportArtifact(payload.report, item.artifact_id);
     if (item.type === "comparison") return renderComparisonArtifact(payload);
+    if (item.type === "cv_recommendation") return renderCVRecommendationArtifact(payload);
     return "";
   }).join("");
 }
@@ -444,6 +497,35 @@ function renderComparisonArtifact(comparison) {
       <div class="comparison-mobile">${rows.map((row) => `<section class="artifact-section"><h4>${escapeHtml(row.dimension)}</h4>${row.values.map((value) => `<p><strong>${escapeHtml(value.company)}:</strong> ${escapeHtml(value.value)}</p>`).join("")}</section>`).join("")}</div>
     </div>
     <footer class="artifact-footer"><div class="source-links">${renderSources((comparison.citations || []).slice(0, 8))}</div><span class="confidence-badge medium">${comparison.report_ids.length} informes</span></footer>
+  </section>`;
+}
+
+function renderCVRecommendationArtifact(artifact) {
+  const suggestions = artifact.payload?.change_suggestions || [];
+  const review = artifact.review?.decisions || [];
+  const decisions = new Map(review.map((item) => [item.suggestion_id, item]));
+  const editable = artifact.status === "awaiting_review";
+  const manual = artifact.review?.manual_suggestion_ids || [];
+  return `<section class="artifact cv-review-artifact" data-artifact-type="cv-recommendation" data-artifact-id="${escapeHtml(artifact.artifact_id)}">
+    <header class="artifact-header"><div><h3>Recomendaciones para tu CV</h3><p>${escapeHtml(artifact.payload?.positioning_summary || "Revisá cada cambio antes de guardarlo.")}</p></div><span class="origin-badge ${editable ? "warning" : "saved"}">${editable ? "Revisión" : "Revisado"}</span></header>
+    <div class="artifact-body review-list">${suggestions.map((suggestion) => {
+      const saved = decisions.get(suggestion.id);
+      return `<article class="review-item ${escapeHtml(saved?.decision || "")}" data-review-suggestion="${escapeHtml(suggestion.id)}" data-review-type="${escapeHtml(suggestion.type)}">
+        <h4>${escapeHtml(suggestion.type)} · ${escapeHtml(suggestion.confidence)}</h4>
+        ${suggestion.original_text ? `<p><strong>Original:</strong> ${escapeHtml(suggestion.original_text)}</p>` : ""}
+        <label class="review-edit"><span>Propuesta</span><textarea rows="3" data-review-text ${editable ? "" : "disabled"}>${escapeHtml(saved?.edited_text || suggestion.suggested_text)}</textarea></label>
+        <p>${escapeHtml(suggestion.reason)}</p>
+        ${suggestion.type === "add_only_if_true" ? `<label class="truth-check"><input type="checkbox" data-truth-confirmed ${saved?.truth_confirmed ? "checked" : ""} ${editable ? "" : "disabled"}> Confirmo que este dato es verdadero</label>` : ""}
+        <div class="review-actions">
+          <label><input type="radio" name="review-${escapeHtml(suggestion.id)}" value="accepted" ${saved?.decision === "accepted" ? "checked" : ""} ${editable ? "" : "disabled"}> Aceptar</label>
+          <label><input type="radio" name="review-${escapeHtml(suggestion.id)}" value="edited" ${saved?.decision === "edited" ? "checked" : ""} ${editable ? "" : "disabled"}> Usar edición</label>
+          <label><input type="radio" name="review-${escapeHtml(suggestion.id)}" value="rejected" ${saved?.decision === "rejected" ? "checked" : ""} ${editable ? "" : "disabled"}> Rechazar</label>
+        </div>
+      </article>`;
+    }).join("")}</div>
+    ${manual.length ? `<div class="evidence-warning"><strong>Cambios manuales pendientes</strong><p>${manual.length} sugerencia${manual.length === 1 ? " no pudo" : "s no pudieron"} aplicarse automáticamente porque el reemplazo era ambiguo o no era texto final.</p></div>` : ""}
+    <div class="artifact-body cv-draft"><label><strong>Borrador editable</strong><textarea class="cv-text-editor" data-review-draft ${editable ? "" : "disabled"}>${escapeHtml(artifact.draft_text || "")}</textarea></label></div>
+    ${editable ? `<footer class="artifact-footer"><div class="review-actions"><button class="secondary-button" type="button" data-submit-review="save">Guardar revisión</button><button class="primary-button" type="button" data-submit-review="version">Crear nueva versión de CV</button></div></footer>` : ""}
   </section>`;
 }
 
@@ -527,28 +609,64 @@ function openLegacyReport(reportId) {
   closeSidebar();
 }
 
-function openCVLibrary() {
+async function openCVLibraryV3() {
   saveDraftAndScroll();
   state.activeView = "cv";
   state.activeLegacyReportId = null;
+  await loadCVs();
   renderActiveView();
   closeSidebar();
 }
 
-function renderCVWorkspace() {
+function renderCVWorkspaceV3() {
   els.conversationView.classList.add("hidden");
   els.cvWorkspace.classList.remove("hidden");
   els.conversationMenuButton.classList.add("hidden");
-  setHeader("Mi CV", "Disponible en la próxima etapa", "");
-  setOriginNotice("local", "Local", "La biblioteca persistente de CV se implementará después de la orquestación del agente.");
-  els.cvWorkspace.innerHTML = `
-    <div class="cv-workspace-header">
-      <div><h2 id="cvWorkspaceTitle">Biblioteca de CV</h2><p>El almacenamiento, la extracción y las versiones todavía no están conectados.</p></div>
-      <div class="cv-actions"><button class="secondary-button" type="button" data-cv-action="back">Volver al chat</button><button class="primary-button" type="button" disabled>Subir CV · Próxima etapa</button></div>
-    </div>
-    <div class="cv-empty">
-      <p>No hay CV guardados. Esta vista se activará cuando exista almacenamiento local persistente.</p>
-    </div>`;
+  setHeader("Mi CV", state.cvStatus === "loading" ? "Cargando" : "Biblioteca local", "");
+  setOriginNotice("local", "Local", "Tus CV y sus versiones se guardan en este equipo.");
+  const header = `<div class="cv-workspace-header">
+    <div><h2 id="cvWorkspaceTitle">Biblioteca de CV</h2><p>Administrá el texto editable y conservá cada archivo original.</p></div>
+    <div class="cv-actions"><button class="secondary-button" type="button" data-cv-action="back">Volver al chat</button><button class="primary-button" type="button" data-cv-action="upload">Subir CV</button></div>
+  </div>`;
+  if (state.cvStatus === "loading") {
+    els.cvWorkspace.innerHTML = `${header}<div class="cv-empty"><p>Cargando CV guardados…</p></div>`;
+    return;
+  }
+  if (state.cvStatus === "error") {
+    els.cvWorkspace.innerHTML = `${header}<div class="cv-empty"><p>No se pudo cargar la biblioteca de CV.</p><button class="secondary-button" type="button" data-cv-action="reload">Reintentar</button></div>`;
+    return;
+  }
+  if (!state.cvs.length) {
+    els.cvWorkspace.innerHTML = `${header}<div class="cv-empty"><p>No hay CV guardados. Subí un PDF o DOCX para comenzar.</p><button class="primary-button" type="button" data-cv-action="upload">Subir primer CV</button></div>`;
+    return;
+  }
+  const detail = state.cvDetail;
+  els.cvWorkspace.innerHTML = `${header}<div class="cv-layout">
+    <nav class="cv-list" aria-label="CV guardados">${state.cvs.map((cv) => `<button class="cv-list-item ${cv.cv_id === state.selectedCVId ? "selected" : ""}" type="button" data-cv-action="select" data-cv-id="${escapeHtml(cv.cv_id)}"><strong>${escapeHtml(cv.display_name)}</strong><small>Versión ${cv.current_version.version_number}${cv.is_default ? " · Predeterminado" : ""}</small></button>`).join("")}</nav>
+    <section class="cv-editor">${detail ? renderCVDetail(detail) : '<div class="cv-empty"><p>Cargando detalle…</p></div>'}</section>
+  </div>`;
+}
+
+function renderCVDetail(cv) {
+  const shown = state.cvViewedVersion || cv;
+  const shownVersion = state.cvViewedVersion || cv.current_version;
+  const signals = shown.structured_profile || {};
+  return `<div class="cv-summary-bar"><div><h3>${escapeHtml(cv.display_name)} ${cv.is_default ? '<span class="origin-badge saved">Predeterminado</span>' : ""}</h3><p>Versión actual ${cv.current_version.version_number} · ${escapeHtml(cv.current_version.content_type || "Solo texto")} · Actualizado ${escapeHtml(formatDate(cv.updated_at))}</p></div>
+    <div class="cv-actions"><button class="secondary-button" type="button" data-cv-action="rename">Renombrar</button>${cv.is_default ? "" : '<button class="secondary-button" type="button" data-cv-action="default">Usar por defecto</button>'}<button class="secondary-button" type="button" data-cv-action="replace">Subir reemplazo</button><button class="danger-button" type="button" data-cv-action="delete">Eliminar</button></div></div>
+    ${state.cvViewedVersion ? `<section class="evidence-warning"><strong>Versión histórica ${shownVersion.version_number}</strong><p>Esta vista es de solo lectura.</p><button class="secondary-button" type="button" data-cv-action="current">Volver a la versión actual</button></section>` : ""}
+    <section class="cv-section"><div class="cv-section-heading"><h3>Resumen</h3></div><div class="profile-signals">${renderProfileSignals(signals)}</div></section>
+    <section class="cv-section"><div class="cv-section-heading"><h3>Texto extraído</h3>${state.cvViewedVersion ? "" : '<button class="primary-button" type="button" data-cv-action="save-text">Guardar como nueva versión</button>'}</div><textarea class="cv-text-editor" data-cv-text ${state.cvViewedVersion ? "disabled" : ""}>${escapeHtml(shown.extracted_text || "")}</textarea></section>
+    <section class="cv-section"><div class="cv-section-heading"><h3>Versiones</h3></div><div class="version-list">${cv.versions.map((version) => `<div class="version-row"><div><strong>Versión ${version.version_number}</strong><small>${escapeHtml(version.created_from)} · ${escapeHtml(formatDate(version.created_at))}</small></div><div class="cv-actions">${version.has_file ? `<a class="secondary-button" href="/api/cvs/${encodeURIComponent(cv.cv_id)}/versions/${encodeURIComponent(version.version_id)}/file" target="_blank" rel="noopener">Archivo original</a>` : ""}${cv.versions.length > 1 ? `<button class="danger-button" type="button" data-cv-action="delete-version" data-version-id="${escapeHtml(version.version_id)}">Eliminar</button>` : ""}</div></div>`).join("")}</div></section>`;
+}
+
+function renderProfileSignals(signals) {
+  const groups = [
+    ["Habilidades", signals.hard_skills],
+    ["Idiomas", signals.languages],
+    ["Roles", signals.roles],
+    ["Educación", signals.education],
+  ].filter(([, values]) => Array.isArray(values) && values.length);
+  return groups.length ? groups.map(([label, values]) => `<div><strong>${label}</strong><p>${values.map(escapeHtml).join(" · ")}</p></div>`).join("") : "<p>No se detectaron señales estructuradas.</p>";
 }
 
 async function renderLegacyConversation() {
@@ -672,6 +790,7 @@ function openEventStream(eventsUrl) {
     "artifact.created",
     "clarification.required",
     "approval.required",
+    "review.required",
     "message.started",
     "message.delta",
     "message.completed",
@@ -726,11 +845,15 @@ function handleStreamEvent(event) {
     state.progress = payload;
   } else if (event.type === "artifact.created") {
     refreshActiveConversation();
-  } else if (event.type === "clarification.required" || event.type === "approval.required") {
+  } else if (["clarification.required", "approval.required", "review.required"].includes(event.type)) {
     conversation.current_task = {
       ...(conversation.current_task || {}),
       task_run_id: payload.task_run_id,
-      status: event.type === "clarification.required" ? "needs_clarification" : "awaiting_approval",
+      status: event.type === "clarification.required"
+        ? "needs_clarification"
+        : event.type === "approval.required"
+          ? "awaiting_approval"
+          : "awaiting_review",
       pause: payload,
     };
     state.progress = null;
@@ -786,7 +909,9 @@ async function hydrateConversationArtifacts(conversation) {
     try {
       state.artifactPayloads[key] = item.type === "report"
         ? await dataSource.getLegacyReport(item.artifact_id)
-        : await dataSource.getComparison(item.artifact_id);
+        : item.type === "comparison"
+          ? await dataSource.getComparison(item.artifact_id)
+          : await dataSource.getCVRecommendation(item.artifact_id);
     } catch {
       state.artifactPayloads[key] = { unavailable: true };
     }
@@ -798,6 +923,9 @@ async function resumeActiveTask(payload) {
   if (!task) return;
   try {
     const accepted = await dataSource.resumeTask(task.task_run_id, payload);
+    if (payload.response_type === "review" && payload.artifact_id) {
+      delete state.artifactPayloads[`cv_recommendation:${payload.artifact_id}`];
+    }
     state.activeConversation = await dataSource.getConversation(activeConversationId());
     state.progress = null;
     renderActiveView({ scrollToBottom: true });
@@ -823,8 +951,25 @@ async function cancelActiveTask() {
 
 function handleAttachmentAction(action) {
   closeMenus();
-  if (["stored-cv", "upload-cv", "job"].includes(action)) {
-    showToast("Disponible en la próxima etapa junto con la biblioteca persistente de CV.");
+  if (action === "stored-cv") {
+    if (!state.cvs.length) {
+      showToast("Todavía no hay CV guardados. Subí uno primero.");
+      return;
+    }
+    els.cvSelectInput.innerHTML = state.cvs.map((cv) => `<option value="${escapeHtml(cv.cv_id)}">${escapeHtml(cv.display_name)}${cv.is_default ? " (predeterminado)" : ""}</option>`).join("");
+    els.cvSelectDialog.showModal();
+    requestAnimationFrame(() => els.cvSelectInput.focus());
+    return;
+  }
+  if (action === "upload-cv") {
+    state.cvUploadTarget = "attach";
+    els.cvFileInput.click();
+    return;
+  }
+  if (action === "job") {
+    els.jobDescriptionInput.value = "";
+    els.jobDialog.showModal();
+    requestAnimationFrame(() => els.jobDescriptionInput.focus());
     return;
   }
   if (action === "report") {
@@ -943,15 +1088,156 @@ async function loadLegacyReports() {
   renderSidebar();
 }
 
+async function loadCVs() {
+  state.cvStatus = "loading";
+  if (state.activeView === "cv") renderActiveView();
+  try {
+    const payload = await dataSource.listCVs();
+    state.cvs = payload.items || [];
+    state.cvStatus = "ready";
+    if (!state.cvs.some((cv) => cv.cv_id === state.selectedCVId)) {
+      state.selectedCVId = state.cvs.find((cv) => cv.is_default)?.cv_id || state.cvs[0]?.cv_id || null;
+    }
+    if (state.selectedCVId) await loadCVDetail(state.selectedCVId, false);
+    else state.cvDetail = null;
+  } catch (error) {
+    state.cvStatus = "error";
+    state.cvs = [];
+    state.cvDetail = null;
+    showToast(error.message);
+  }
+  renderSidebar();
+  if (state.activeView === "cv") renderActiveView();
+}
+
+async function loadCVDetail(cvId, rerender = true) {
+  state.selectedCVId = cvId;
+  state.cvViewedVersion = null;
+  try {
+    state.cvDetail = await dataSource.getCV(cvId);
+  } catch (error) {
+    state.cvDetail = null;
+    showToast(error.message);
+  }
+  if (rerender) renderActiveView();
+}
+
+function attachStoredCV(cv) {
+  const key = activeConversationId() || "new";
+  state.attachments[key] ||= [];
+  if (!state.attachments[key].some((item) => item.type === "cv" && item.artifactId === cv.cv_id)) {
+    state.attachments[key].push({ id: `cv-${cv.cv_id}`, type: "cv", artifactId: cv.cv_id, label: cv.display_name });
+  }
+  renderAttachmentChips(state.attachments[key]);
+}
+
+async function uploadSelectedCV(file) {
+  if (!file) return;
+  const target = state.cvUploadTarget;
+  try {
+    const uploaded = await dataSource.uploadCV(file, target && target !== "attach" ? target : null);
+    await loadCVs();
+    if (target === "attach") attachStoredCV(state.cvs.find((cv) => cv.cv_id === uploaded.cv_id) || uploaded);
+    if (state.activeView === "cv") await loadCVDetail(uploaded.cv_id);
+    showToast(target && target !== "attach" ? "Nueva versión guardada." : "CV guardado localmente.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.cvUploadTarget = null;
+    els.cvFileInput.value = "";
+  }
+}
+
+async function handleCVWorkspaceAction(button) {
+  const action = button.dataset.cvAction;
+  const cv = state.cvDetail;
+  if (action === "back") {
+    state.activeView = "conversation";
+    renderActiveView();
+    requestAnimationFrame(() => els.composerText.focus());
+    return;
+  }
+  if (action === "reload") return loadCVs();
+  if (action === "upload") {
+    state.cvUploadTarget = null;
+    els.cvFileInput.click();
+    return;
+  }
+  if (action === "select") return loadCVDetail(button.dataset.cvId);
+  if (!cv) return;
+  if (action === "current") {
+    state.cvViewedVersion = null;
+    renderActiveView();
+  } else if (action === "view-version") {
+    try {
+      state.cvViewedVersion = await dataSource.getCVVersion(cv.cv_id, button.dataset.versionId);
+      renderActiveView();
+    } catch (error) { showToast(error.message); }
+  } else if (action === "rename") {
+    state.pendingCVRename = cv.cv_id;
+    state.pendingRename = null;
+    els.renameDialogTitle.textContent = "Renombrar CV";
+    els.renameDialogHint.textContent = "Este nombre se usa solamente dentro de Radar Laboral.";
+    els.renameInput.value = cv.display_name;
+    els.renameDialog.showModal();
+    requestAnimationFrame(() => els.renameInput.select());
+  } else if (action === "default") {
+    try { await dataSource.updateCV(cv.cv_id, { is_default: true }); await loadCVs(); showToast("CV predeterminado actualizado."); } catch (error) { showToast(error.message); }
+  } else if (action === "replace") {
+    state.cvUploadTarget = cv.cv_id;
+    els.cvFileInput.click();
+  } else if (action === "save-text") {
+    const textValue = els.cvWorkspace.querySelector("[data-cv-text]")?.value.trim();
+    if (!textValue) return showToast("El texto del CV no puede estar vacío.");
+    try { await dataSource.updateCV(cv.cv_id, { extracted_text: textValue, source_version_id: cv.current_version_id }); await loadCVs(); showToast("Nueva versión de texto guardada."); } catch (error) { showToast(error.message); }
+  } else if (action === "delete") {
+    showConfirmation({ title: "Eliminar CV", message: `¿Eliminar ${cv.display_name} y todas sus versiones locales?`, action: async () => {
+      try { await dataSource.deleteCV(cv.cv_id); state.selectedCVId = null; await loadCVs(); showToast("CV eliminado."); } catch (error) { showToast(error.message); }
+    } });
+  } else if (action === "delete-version") {
+    const versionId = button.dataset.versionId;
+    showConfirmation({ title: "Eliminar versión", message: "El archivo original de esta versión también se eliminará.", action: async () => {
+      try { await dataSource.deleteCVVersion(cv.cv_id, versionId); await loadCVs(); showToast("Versión eliminada."); } catch (error) { showToast(error.message); }
+    } });
+  }
+}
+
+async function submitCVReview(button) {
+  const artifact = button.closest("[data-artifact-id]");
+  const artifactId = artifact?.dataset.artifactId;
+  if (!artifactId) return;
+  const decisions = [];
+  for (const item of artifact.querySelectorAll("[data-review-suggestion]")) {
+    const decision = item.querySelector("input[type=radio]:checked")?.value;
+    if (!decision) {
+      showToast("Elegí aceptar, editar o rechazar cada sugerencia.");
+      return;
+    }
+    decisions.push({
+      suggestion_id: item.dataset.reviewSuggestion,
+      decision,
+      edited_text: item.querySelector("[data-review-text]")?.value || null,
+      truth_confirmed: Boolean(item.querySelector("[data-truth-confirmed]")?.checked),
+    });
+  }
+  await resumeActiveTask({
+    response_type: "review",
+    artifact_id: artifactId,
+    review_decisions: decisions,
+    draft_text: artifact.querySelector("[data-review-draft]")?.value || null,
+    save_as_cv_version: button.dataset.submitReview === "version",
+  });
+}
+
 async function initialize() {
-  await Promise.all([loadConversations(), loadLegacyReports()]);
+  await Promise.all([loadConversations(), loadLegacyReports(), loadCVs()]);
   if (state.conversations.length) await openConversation(state.conversations[0].conversation_id);
   else renderActiveView();
 }
 
 els.newChatButton.addEventListener("click", createNewConversation);
 els.brandButton.addEventListener("click", createNewConversation);
-els.cvLibraryButton.addEventListener("click", openCVLibrary);
+els.cvLibraryButton.addEventListener("click", openCVLibraryV3);
 els.settingsButton.addEventListener("click", () => showToast("La configuración se conectará en una etapa posterior."));
 els.openSidebar.addEventListener("click", () => {
   els.appShell.classList.add("sidebar-open");
@@ -1030,6 +1316,11 @@ els.composerText.addEventListener("keydown", (event) => {
 });
 
 els.conversationTranscript.addEventListener("click", (event) => {
+  const reviewButton = event.target.closest("[data-submit-review]");
+  if (reviewButton) {
+    submitCVReview(reviewButton);
+    return;
+  }
   if (event.target.closest("[data-retry-task]")) {
     retryFailedTask();
     return;
@@ -1063,9 +1354,34 @@ els.conversationTranscript.addEventListener("click", (event) => {
 });
 
 els.cvWorkspace.addEventListener("click", (event) => {
-  if (!event.target.closest('[data-cv-action="back"]')) return;
-  state.activeView = "conversation";
-  renderActiveView();
+  const button = event.target.closest("[data-cv-action]");
+  if (button) handleCVWorkspaceAction(button);
+});
+
+els.cvFileInput.addEventListener("change", () => uploadSelectedCV(els.cvFileInput.files?.[0]));
+
+els.confirmCVSelection.addEventListener("click", (event) => {
+  event.preventDefault();
+  const cv = state.cvs.find((item) => item.cv_id === els.cvSelectInput.value);
+  if (!cv) return;
+  attachStoredCV(cv);
+  els.cvSelectDialog.close();
+  requestAnimationFrame(() => els.composerText.focus());
+});
+
+els.jobDialogForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const content = els.jobDescriptionInput.value.trim();
+  if (!content) {
+    els.jobDescriptionInput.focus();
+    return;
+  }
+  const key = activeConversationId() || "new";
+  state.attachments[key] ||= [];
+  state.attachments[key] = state.attachments[key].filter((item) => item.type !== "job_description");
+  state.attachments[key].push({ id: `job-${Date.now()}`, type: "job_description", content, title: "Descripción de puesto", label: "Descripción de puesto" });
+  renderAttachmentChips(state.attachments[key]);
+  els.jobDialog.close();
   requestAnimationFrame(() => els.composerText.focus());
 });
 
@@ -1073,11 +1389,19 @@ els.confirmRename.addEventListener("click", async (event) => {
   event.preventDefault();
   const title = els.renameInput.value.trim();
   const conversationId = state.pendingRename;
-  if (!title || !conversationId) {
+  const cvId = state.pendingCVRename;
+  if (!title || (!conversationId && !cvId)) {
     els.renameInput.focus();
     return;
   }
   try {
+    if (cvId) {
+      await dataSource.updateCV(cvId, { display_name: title });
+      state.pendingCVRename = null;
+      els.renameDialog.close();
+      await loadCVs();
+      return;
+    }
     await dataSource.renameConversation(conversationId, title);
     state.pendingRename = null;
     els.renameDialog.close();

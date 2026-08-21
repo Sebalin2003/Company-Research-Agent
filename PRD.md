@@ -1066,6 +1066,8 @@ The existing frontend is replaced behaviorally by the conversation-first UI, but
 
 ### Phase 1: Conversation Foundation
 
+**Implemented.**
+
 - conversation, message, task, and event persistence;
 - conversation REST APIs and SSE;
 - basic conversation-first shell;
@@ -1073,12 +1075,16 @@ The existing frontend is replaced behaviorally by the conversation-first UI, but
 
 ### Phase 2: Agent Orchestration
 
+**Implemented with DeepSeek generation and Gemini embeddings.**
+
 - DeepSeek tool-calling loop;
 - controlled research and retrieval tools;
 - budgets, progress events, pause states, and grounding validation;
 - report and comparison artifacts.
 
 ### Phase 3: Local CV Library
+
+**Implemented.** The reviewed output is an editable draft or an explicitly saved text version; formatted DOCX/PDF generation remains out of scope.
 
 - managed file storage and versioning;
 - sidebar and composer upload;

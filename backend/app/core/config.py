@@ -23,6 +23,8 @@ class Settings:
     search_provider_api_key: str | None = None
     report_freshness_days: int = 30
     cv_text_max_characters: int = 50_000
+    cv_file_max_bytes: int = 10 * 1024 * 1024
+    cv_storage_dir: str = "./data/cvs"
     rag_top_k: int = 8
     research_search_concurrency: int = 4
     research_extract_concurrency: int = 6
@@ -70,6 +72,10 @@ def get_settings() -> Settings:
         cv_text_max_characters=int(
             os.getenv("CV_TEXT_MAX_CHARACTERS", str(Settings.cv_text_max_characters))
         ),
+        cv_file_max_bytes=int(
+            os.getenv("CV_FILE_MAX_BYTES", str(Settings.cv_file_max_bytes))
+        ),
+        cv_storage_dir=os.getenv("CV_STORAGE_DIR", Settings.cv_storage_dir),
         rag_top_k=int(os.getenv("RAG_TOP_K", str(Settings.rag_top_k))),
         research_search_concurrency=int(
             os.getenv("RESEARCH_SEARCH_CONCURRENCY", str(Settings.research_search_concurrency))

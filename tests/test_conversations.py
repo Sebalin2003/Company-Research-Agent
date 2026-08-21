@@ -355,7 +355,7 @@ def test_invalid_and_cv_attachments_are_rejected(client: TestClient) -> None:
         },
     )
     assert cv.status_code == 400
-    assert cv.json()["error"]["code"] == "cv_library_unavailable"
+    assert cv.json()["error"]["code"] == "invalid_attachment"
 
 
 def test_invalid_event_cursor_and_interrupted_task_recovery(

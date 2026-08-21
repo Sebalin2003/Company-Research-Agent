@@ -1,6 +1,6 @@
-# Company Research Agent
+# Radar Laboral
 
-Company Research Agent is a FastAPI web app for researching companies and preparing for job applications or interviews. It is built for Spanish-first career preparation, especially for job seekers who want a clear company report backed by public evidence instead of generic AI advice.
+Radar Laboral is a local, Spanish-first conversational career assistant. DeepSeek decides whether to answer directly, ask for clarification, use saved evidence, research with Tavily, or prepare a reviewed CV-tailoring draft.
 
 The app can research a company, generate a structured report, cite sources, show uncertainty when evidence is missing, optionally use CV text for personalized preparation, and answer follow-up questions from saved reports.
 
@@ -10,8 +10,9 @@ The app can research a company, generate a structured report, cite sources, show
 - Collects public evidence through a configurable search pipeline.
 - Extracts and classifies evidence before asking the LLM to synthesize the report.
 - Uses DeepSeek V4 Flash for agent decisions and text generation, with Google Gemini retained only for embeddings.
-- Stores reports, sources, evidence, claims, chat history, and optional CV-derived structured data in SQLite.
-- Supports optional CV upload or pasted CV text for interview preparation and CV tailoring suggestions.
+- Stores conversations, task events, reports, evidence, CV metadata, extracted text, job descriptions, and reviewed artifacts in SQLite.
+- Stores immutable PDF/DOCX originals and versioned replacements in a managed local CV directory.
+- Supports evidence-linked CV recommendations with accept, reject, edit, and truth-confirmation controls.
 - Avoids returning or embedding raw CV text by default.
 - Includes a simple frontend served by FastAPI.
 
@@ -26,7 +27,7 @@ backend/
     domain/       domain objects for reports, companies, and CVs
     llm/          DeepSeek client, prompts, and synthesis logic
     research/     search, extraction, scoring, and evidence pipeline
-    services/     report generation, RAG chat, CV extraction, indexing
+    services/     agent orchestration, report generation, CV library, RAG, indexing
 
 frontend/
   index.html      main web UI
@@ -38,15 +39,13 @@ tests/            pytest coverage for backend, frontend static checks, and flows
 
 ## How The Flow Works
 
-1. The user submits a company name from the frontend.
-2. The frontend calls `POST /api/research`.
-3. FastAPI creates a company and report record in SQLite.
-4. A background task runs the research pipeline.
-5. The pipeline searches, extracts useful page content, classifies evidence, and scores sources.
-6. DeepSeek receives a limited, evidence-backed context and returns structured JSON.
-7. Pydantic validates the generated report.
-8. The report is saved and can be read with `GET /api/reports/{report_id}`.
-9. Chat endpoints answer follow-up questions using saved report evidence.
+1. The user sends a message and optional report, CV, or job-description attachment.
+2. FastAPI persists the message and task, then publishes durable progress through SSE.
+3. DeepSeek chooses one bounded action at a time; backend code validates and executes it.
+4. Research uses Tavily and deterministic evidence safeguards when factual grounding is required.
+5. CV requests expose only structured signals and selected supporting lines to DeepSeek.
+6. Tailoring creates a durable editable artifact and pauses for explicit user review.
+7. Accepted review decisions may optionally create a new text-only CV version; originals are never overwritten.
 
 The conversational agent lets DeepSeek choose among bounded tools. The backend still executes tools and enforces evidence, citation, budget, validation, and persistence rules.
 
@@ -83,6 +82,8 @@ DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-v4-flash
 GEMINI_API_KEY=
 GEMINI_EMBEDDING_MODEL=gemini-embedding-2
+CV_STORAGE_DIR=./data/cvs
+CV_FILE_MAX_BYTES=10485760
 ```
 
 Use `SEARCH_PROVIDER=mock` for local development without external search. Use `SEARCH_PROVIDER=tavily` when you want real company research through Tavily.
@@ -111,6 +112,14 @@ http://127.0.0.1:8000/docs
 
 ## Main API Endpoints
 
+- `POST/GET /api/conversations` creates or lists persistent conversations.
+- `POST /api/conversations/{conversation_id}/messages` starts an agent task.
+- `GET /api/conversations/{conversation_id}/events` streams persisted SSE events.
+- `POST /api/task-runs/{task_run_id}/resume` resumes clarification, approval, or CV review.
+- `POST/GET /api/cvs` uploads or lists stored CVs.
+- `GET/PATCH/DELETE /api/cvs/{cv_id}` reads, edits, or deletes one stored CV.
+- `POST /api/cvs/{cv_id}/versions` uploads a replacement version.
+- `GET /api/cv-recommendations/{artifact_id}` reads a durable review artifact.
 - `POST /api/research` starts a company research report.
 - `GET /api/reports/{report_id}` returns report status or the completed report.
 - `GET /api/reports` lists recent reports.
@@ -144,15 +153,16 @@ Run the test suite with the project virtual environment:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The suite covers the report flow, research pipeline, DeepSeek synthesis validation, Gemini embeddings, RAG behavior, CV preparation, and frontend static checks.
+The suite covers conversations and SSE, agent orchestration, report grounding, DeepSeek generation, Gemini embeddings, persistent CV lifecycle and review safety, and frontend contracts.
 
 ## Evidence And Privacy Safeguards
 
 - Reports include sources, evidence, confidence, warnings, and missing-evidence signals.
 - Factual claims are tied to evidence IDs.
 - The backend validates generated reports before saving completed output.
-- CV use is optional.
-- Raw CV text is not exposed by default.
+- CV use is optional and only enters the agent flow after an explicit CV-related request or attachment.
+- CV list, conversation, SSE, logs, summaries, and embedding paths do not expose complete raw CV text.
+- Uploaded originals are immutable; replacements and text edits create new versions.
 - CV-derived report data can be deleted separately from the company report.
 - The adapted CV draft must not invent experience, dates, credentials, employers, metrics, or tools.
 
