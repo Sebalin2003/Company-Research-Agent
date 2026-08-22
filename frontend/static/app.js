@@ -20,6 +20,8 @@ const state = {
   scrollPositions: {},
   eventSource: null,
   eventPollTimer: null,
+  reconnectTimer: null,
+  eventCursors: {},
   seenEventIds: new Set(),
   progress: null,
   artifactPayloads: {},
@@ -34,6 +36,7 @@ const state = {
   cvUploadTarget: null,
   cvViewedVersion: null,
   pendingCVRename: null,
+  dialogReturnFocus: null,
 };
 
 const els = {
@@ -55,6 +58,7 @@ const els = {
   demoNotice: document.querySelector("#demoNotice"),
   conversationView: document.querySelector("#conversationView"),
   conversationTranscript: document.querySelector("#conversationTranscript"),
+  taskAnnouncements: document.querySelector("#taskAnnouncements"),
   cvWorkspace: document.querySelector("#cvWorkspace"),
   composerForm: document.querySelector("#composerForm"),
   composerText: document.querySelector("#composerText"),
@@ -345,6 +349,7 @@ function renderConversation({ scrollToBottom = false } = {}) {
   const conversation = state.activeConversation;
   const running = ["pending", "running"].includes(conversation?.current_task?.status);
   const taskActive = isTaskActive();
+  els.conversationTranscript.setAttribute("aria-busy", String(taskActive));
   setHeader(
     conversation?.title || "Nueva conversación",
     statusLabel(conversation?.current_task?.status || "ready"),
@@ -779,8 +784,7 @@ async function retryFailedTask() {
 
 function openEventStream(eventsUrl) {
   closeEventStream();
-  state.seenEventIds.clear();
-  const source = new EventSource(eventsUrl);
+  const source = new EventSource(eventStreamUrl(eventsUrl));
   state.eventSource = source;
   const eventTypes = [
     "task.started",
@@ -803,13 +807,32 @@ function openEventStream(eventsUrl) {
   state.eventPollTimer = window.setTimeout(pollActiveTaskState, 1000);
   source.onerror = async () => {
     if (state.eventSource !== source) return;
+    state.eventSource = null;
+    source.close();
     await refreshActiveConversation();
     if (!isTaskActive()) {
       closeEventStream();
       return;
     }
     setHeader(state.activeConversation?.title || "Conversación", "Reconectando eventos…", "running");
+    announceTask("Se perdió la conexión con los eventos. Reconectando.");
+    const conversationId = activeConversationId();
+    window.clearTimeout(state.eventPollTimer);
+    state.eventPollTimer = null;
+    state.reconnectTimer = window.setTimeout(
+      () => openEventStream(`/api/conversations/${encodeURIComponent(conversationId)}/events`),
+      750,
+    );
   };
+}
+
+function eventStreamUrl(eventsUrl) {
+  const url = new URL(eventsUrl, window.location.origin);
+  const conversationId = activeConversationId();
+  const requested = Number(url.searchParams.get("after_event_id") || 0);
+  const remembered = Number(state.eventCursors[conversationId] || 0);
+  url.searchParams.set("after_event_id", String(Math.max(requested, remembered)));
+  return `${url.pathname}${url.search}`;
 }
 
 async function pollActiveTaskState() {
@@ -832,7 +855,15 @@ async function pollActiveTaskState() {
   state.eventPollTimer = window.setTimeout(pollActiveTaskState, 1000);
 }
 
-function handleStreamEvent(event) {
+async function handleStreamEvent(event) {
+  const conversationId = activeConversationId();
+  const eventId = Number(event.lastEventId || 0);
+  if (eventId > 0 && conversationId) {
+    state.eventCursors[conversationId] = Math.max(
+      Number(state.eventCursors[conversationId] || 0),
+      eventId,
+    );
+  }
   if (event.lastEventId && state.seenEventIds.has(event.lastEventId)) return;
   if (event.lastEventId) state.seenEventIds.add(event.lastEventId);
   const payload = JSON.parse(event.data || "{}");
@@ -841,10 +872,12 @@ function handleStreamEvent(event) {
 
   if (event.type === "task.started") {
     conversation.current_task = { ...(conversation.current_task || {}), task_run_id: payload.task_run_id, status: "running" };
+    announceTask("DeepSeek comenzó a procesar el mensaje.");
   } else if (["task.progress", "tool.started", "tool.completed"].includes(event.type)) {
     state.progress = payload;
+    if (payload.label) announceTask(payload.label);
   } else if (event.type === "artifact.created") {
-    refreshActiveConversation();
+    await refreshActiveConversation();
   } else if (["clarification.required", "approval.required", "review.required"].includes(event.type)) {
     conversation.current_task = {
       ...(conversation.current_task || {}),
@@ -858,7 +891,9 @@ function handleStreamEvent(event) {
     };
     state.progress = null;
     closeEventStream();
-    refreshActiveConversation();
+    announceTask(payload.prompt || "La tarea necesita tu revisión.");
+    await refreshActiveConversation();
+    return;
   } else if (event.type === "message.started" || event.type === "message.completed") {
     upsertMessage(payload.message);
   } else if (event.type === "message.delta") {
@@ -868,7 +903,9 @@ function handleStreamEvent(event) {
     conversation.current_task = { ...(conversation.current_task || {}), task_run_id: payload.task_run_id, status: payload.status };
     state.progress = null;
     closeEventStream();
-    refreshActiveConversation();
+    announceTask(event.type === "task.completed" ? "Respuesta completada." : payload.message || "La tarea terminó.");
+    await refreshActiveConversation();
+    return;
   }
   renderActiveView({ scrollToBottom: true });
 }
@@ -886,6 +923,12 @@ function closeEventStream() {
   state.eventSource = null;
   window.clearTimeout(state.eventPollTimer);
   state.eventPollTimer = null;
+  window.clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+}
+
+function announceTask(message) {
+  els.taskAnnouncements.textContent = message || "";
 }
 
 async function refreshActiveConversation() {
@@ -956,6 +999,7 @@ function handleAttachmentAction(action) {
       showToast("Todavía no hay CV guardados. Subí uno primero.");
       return;
     }
+    state.dialogReturnFocus = els.attachmentButton;
     els.cvSelectInput.innerHTML = state.cvs.map((cv) => `<option value="${escapeHtml(cv.cv_id)}">${escapeHtml(cv.display_name)}${cv.is_default ? " (predeterminado)" : ""}</option>`).join("");
     els.cvSelectDialog.showModal();
     requestAnimationFrame(() => els.cvSelectInput.focus());
@@ -967,6 +1011,7 @@ function handleAttachmentAction(action) {
     return;
   }
   if (action === "job") {
+    state.dialogReturnFocus = els.attachmentButton;
     els.jobDescriptionInput.value = "";
     els.jobDialog.showModal();
     requestAnimationFrame(() => els.jobDescriptionInput.focus());
@@ -1000,6 +1045,7 @@ function saveDraftAndScroll() {
 }
 
 function showRenameDialog(conversationId, currentName) {
+  state.dialogReturnFocus = document.activeElement;
   state.pendingRename = conversationId;
   els.renameDialogTitle.textContent = "Renombrar conversación";
   els.renameDialogHint.textContent = "Usá un título que te ayude a encontrarla.";
@@ -1009,6 +1055,7 @@ function showRenameDialog(conversationId, currentName) {
 }
 
 function showConfirmation({ title, message, actionLabel = "Eliminar", action }) {
+  state.dialogReturnFocus = document.activeElement;
   state.pendingConfirmation = action;
   els.confirmDialogTitle.textContent = title;
   els.confirmDialogMessage.textContent = message;
@@ -1038,13 +1085,19 @@ function toggleMenu(menu, button, force) {
   button?.setAttribute("aria-expanded", String(shouldOpen));
 }
 
-function closeMenus() {
+function closeMenus({ restoreFocus = false } = {}) {
+  const attachmentWasOpen = !els.attachmentMenu.classList.contains("hidden");
+  const conversationWasOpen = !els.conversationMenu.classList.contains("hidden");
   toggleMenu(els.attachmentMenu, els.attachmentButton, false);
   toggleMenu(els.conversationMenu, els.conversationMenuButton, false);
+  if (restoreFocus && attachmentWasOpen) els.attachmentButton.focus();
+  else if (restoreFocus && conversationWasOpen) els.conversationMenuButton.focus();
 }
 
-function closeSidebar() {
+function closeSidebar({ restoreFocus = false } = {}) {
+  const wasOpen = els.appShell.classList.contains("sidebar-open");
   els.appShell.classList.remove("sidebar-open");
+  if (restoreFocus && wasOpen && window.innerWidth < 900) requestAnimationFrame(() => els.openSidebar.focus());
 }
 
 function resizeComposer() {
@@ -1174,6 +1227,7 @@ async function handleCVWorkspaceAction(button) {
       renderActiveView();
     } catch (error) { showToast(error.message); }
   } else if (action === "rename") {
+    state.dialogReturnFocus = document.activeElement;
     state.pendingCVRename = cv.cv_id;
     state.pendingRename = null;
     els.renameDialogTitle.textContent = "Renombrar CV";
@@ -1243,8 +1297,8 @@ els.openSidebar.addEventListener("click", () => {
   els.appShell.classList.add("sidebar-open");
   requestAnimationFrame(() => els.closeSidebar.focus());
 });
-els.closeSidebar.addEventListener("click", closeSidebar);
-els.sidebarBackdrop.addEventListener("click", closeSidebar);
+els.closeSidebar.addEventListener("click", () => closeSidebar({ restoreFocus: true }));
+els.sidebarBackdrop.addEventListener("click", () => closeSidebar({ restoreFocus: true }));
 
 els.conversationSearch.addEventListener("input", () => {
   state.search = els.conversationSearch.value;
@@ -1434,9 +1488,23 @@ document.addEventListener("keydown", (event) => {
     requestAnimationFrame(() => els.conversationSearch.focus());
   }
   if (event.key === "Escape") {
-    closeMenus();
-    closeSidebar();
+    const openDialog = document.querySelector("dialog[open]");
+    if (openDialog) {
+      event.preventDefault();
+      openDialog.close();
+      return;
+    }
+    closeMenus({ restoreFocus: true });
+    closeSidebar({ restoreFocus: true });
   }
+});
+
+[els.jobDialog, els.cvSelectDialog, els.renameDialog, els.confirmDialog].forEach((dialog) => {
+  dialog.addEventListener("close", () => {
+    const target = state.dialogReturnFocus;
+    state.dialogReturnFocus = null;
+    if (target?.isConnected) requestAnimationFrame(() => target.focus());
+  });
 });
 
 window.addEventListener("beforeunload", closeEventStream);

@@ -333,6 +333,9 @@ class ConversationRepository:
             )
         )
         for task in tasks:
+            task.pause_reason_json = json.dumps(
+                {"type": "server_restart", "message": message}, ensure_ascii=False
+            )
             self.update_task(task, "failed", "server_restarted")
             self.add_event(
                 task,

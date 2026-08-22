@@ -171,6 +171,8 @@ class AgentOrchestrator:
         task = self.repo.get_task(task_id)
         if not task or task.status != "pending":
             return
+        usage: dict[str, Any] | None = None
+        run_started: float | None = None
         try:
             self.repo.update_task(task, "running")
             self.repo.add_event(task, "task.started", {"task_run_id": task.id, "status": "running"})
@@ -184,13 +186,29 @@ class AgentOrchestrator:
                     "status": "running",
                 },
             )
+            usage = safe_json_dict(task.usage_json)
+            for key in (
+                "model_turns",
+                "searches",
+                "inspections",
+                "elapsed_ms",
+                "deepseek_ms",
+                "search_ms",
+                "inspection_ms",
+                "evidence_ms",
+                "artifact_ms",
+                "tool_ms",
+                "provider_requests",
+                "tool_calls",
+            ):
+                usage.setdefault(key, 0)
+            usage.setdefault(
+                "first_progress_ms",
+                elapsed_datetime_ms(task.created_at),
+            )
+            task.usage_json = json.dumps(usage, ensure_ascii=False)
             self.db.commit()
             state = self.load_state(task)
-            usage = safe_json_dict(task.usage_json)
-            usage.setdefault("model_turns", 0)
-            usage.setdefault("searches", 0)
-            usage.setdefault("inspections", 0)
-            usage.setdefault("elapsed_ms", 0)
             self.run_elapsed_base = int(usage["elapsed_ms"])
             run_started = time.monotonic()
             messages: list[dict[str, Any]] = [
@@ -331,8 +349,18 @@ class AgentOrchestrator:
                 if state.force_finalize and name != "respond":
                     raise AgentFailure("DeepSeek no pudo finalizar la respuesta dentro del presupuesto.")
         except (AgentPaused, AgentCompleted):
+            if usage is not None and run_started is not None:
+                self.persist_usage(task, usage, run_started)
+                self.db.commit()
             return
         except Exception as exc:
+            if usage is not None and run_started is not None:
+                if self.client is not None and getattr(self.client, "last_usage", {}).get(
+                    "failed_request"
+                ):
+                    self.add_provider_usage(usage, self.client.last_usage)
+                self.persist_usage(task, usage, run_started)
+                self.db.commit()
             self.fail_task(task_id, exc)
 
     def get_client(self):
@@ -462,6 +490,8 @@ class AgentOrchestrator:
             "total_tokens",
             "cache_hit_tokens",
             "cache_miss_tokens",
+            "deepseek_ms",
+            "provider_requests",
         ):
             usage[key] = int(usage.get(key) or 0) + int(provider_usage.get(key) or 0)
 
@@ -574,12 +604,27 @@ class AgentOrchestrator:
         handler = handlers.get(name)
         if not handler:
             return ToolResult({"ok": False, "error": "Herramienta no permitida."}, [])
+        started = time.monotonic()
         try:
             return handler(task, state, usage, arguments)
         except (AgentPaused, AgentCompleted):
             raise
         except (ValidationError, ValueError) as exc:
             return ToolResult({"ok": False, "error": str(exc)[:500]}, [])
+        finally:
+            elapsed = int((time.monotonic() - started) * 1000)
+            usage["tool_calls"] = int(usage.get("tool_calls") or 0) + 1
+            usage["tool_ms"] = int(usage.get("tool_ms") or 0) + elapsed
+            timing_key = {
+                "search_web": "search_ms",
+                "inspect_page": "inspection_ms",
+                "review_evidence": "evidence_ms",
+                "finish_research": "artifact_ms",
+                "compare_reports": "artifact_ms",
+                "prepare_cv_recommendations": "artifact_ms",
+            }.get(name)
+            if timing_key:
+                usage[timing_key] = int(usage.get(timing_key) or 0) + elapsed
 
     def tool_respond(self, task, state, usage, arguments) -> ToolResult:
         if state.force_finalize and state.requires_grounding and not state.evidence:
@@ -601,6 +646,13 @@ class AgentOrchestrator:
                 str(arguments.get("answer_type") or ("grounded" if state.requires_grounding else "guidance")),
             ).model_dump(mode="json")
         answer = AgentAnswer.model_validate(arguments)
+        usage["response_kind"] = (
+            "artifact"
+            if state.generated_report_id
+            or state.generated_comparison_id
+            or state.recommendation_artifact_id
+            else "grounded" if answer.answer_type == "grounded" else "direct"
+        )
         evidence_by_id = {item.id: item for item in state.evidence}
         cited_ids = [evidence_id for claim in answer.claims for evidence_id in claim.evidence_ids]
         invalid_ids = sorted(set(cited_ids) - set(evidence_by_id))
@@ -666,7 +718,7 @@ class AgentOrchestrator:
         self.repo.update_task(task, "completed")
         self.repo.add_event(task, "task.completed", {"task_run_id": task.id, "status": "completed"})
         self.db.commit()
-        self.summarize_if_needed(conversation)
+        self.summarize_if_needed(conversation, usage)
         raise AgentCompleted
 
     def generate_final_answer(
@@ -875,6 +927,7 @@ class AgentOrchestrator:
             report=report,
             include_adapted_cv_draft=False,
         )
+        self.add_provider_usage(usage, getattr(self.get_client(), "last_usage", {}))
         allowed_ids = {
             *(f"cv_line_{index}" for index in range(1, len(cv_lines) + 1)),
             *(f"job_line_{index}" for index in range(1, len(job_lines) + 1)),
@@ -1256,6 +1309,7 @@ class AgentOrchestrator:
                     cv_text=None,
                 )
             )
+            self.add_provider_usage(usage, getattr(self.get_client(), "last_usage", {}))
             self.report_repo.save_structured_report(report, structured)
         except Exception as exc:
             self.db.rollback()
@@ -1425,7 +1479,7 @@ class AgentOrchestrator:
             "agent_failed",
         )
 
-    def summarize_if_needed(self, conversation: models.Conversation) -> None:
+    def summarize_if_needed(self, conversation: models.Conversation, usage: dict) -> None:
         messages = self.repo.list_messages(conversation.id)
         if len(messages) <= 20:
             return
@@ -1434,12 +1488,14 @@ class AgentOrchestrator:
             [{"role": item.role, "content": item.content} for item in older], ensure_ascii=False
         )
         try:
-            response = self.get_client().generate_text(
+            client = self.get_client()
+            response = client.generate_text(
                 SYSTEM_PROMPT,
                 prompt[:24_000],
                 max_tokens=1200,
                 temperature=0.1,
             )
+            self.add_provider_usage(usage, getattr(client, "last_usage", {}))
             summary = response.content.strip()
             if summary:
                 self.repo.update_summary(conversation, summary)
@@ -1692,6 +1748,13 @@ FUNCTION_SCHEMAS = {
         },
     },
 }
+
+
+def elapsed_datetime_ms(started) -> int:
+    now = utc_now()
+    if started.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return max(0, int((now - started).total_seconds() * 1000))
 
 
 def evidence_identifier(source_id: str, topic: str, excerpt: str) -> str:

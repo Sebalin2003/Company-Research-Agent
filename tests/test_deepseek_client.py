@@ -134,6 +134,9 @@ def test_http_errors_are_sanitized(status_code: int) -> None:
 
     assert caught.value.status_code == status_code
     assert "provider body" not in str(caught.value)
+    assert client.last_usage["provider_requests"] == 1
+    assert client.last_usage["failed_request"] == 1
+    assert client.last_usage["deepseek_ms"] >= 0
 
 
 def test_invalid_tool_arguments_are_rejected() -> None:

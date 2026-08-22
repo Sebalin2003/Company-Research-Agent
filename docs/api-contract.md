@@ -53,6 +53,12 @@ Persistent CV endpoints:
 
 Complete CV text is returned only by explicit CV detail/version endpoints. CV lists, conversation responses, task state, and SSE events contain metadata or artifact IDs only.
 
+### Additive task usage fields
+
+Conversation task responses expose a sanitized `usage` object. It may include `acceptance_ms`, `first_progress_ms`, `elapsed_ms`, `deepseek_ms`, `search_ms`, `inspection_ms`, `evidence_ms`, `artifact_ms`, `tool_ms`, provider/tool counts, model turns, search/inspection counts, token/cache totals, and `response_kind`. These fields are additive and never contain prompts, raw CV/job text, provider bodies, working state, or chain-of-thought.
+
+SSE event names remain unchanged. Clients keep the latest event ID, reconnect with `Last-Event-ID` or `after_event_id`, ignore duplicate event/message/artifact IDs, and reconcile the complete conversation after errors and terminal events.
+
 ## Status Codes
 
 Use these status codes consistently:

@@ -1093,11 +1093,13 @@ The existing frontend is replaced behaviorally by the conversation-first UI, but
 
 ### Phase 4: Hardening
 
-- reconnection and resumability;
-- accessibility and responsive verification;
-- migration coverage;
-- evaluation benchmark against the current deterministic pipeline;
-- performance, cost, and failure-state measurement.
+**Implemented.**
+
+- safe Alembic adoption with backup and incompatible-schema refusal;
+- cursor-based SSE reconnection, terminal reconciliation, and restart-safe pause states;
+- sanitized latency, provider/tool-count, token, cache, and optional cost measurement;
+- accessibility and responsive verification at the target desktop, tablet, and mobile widths;
+- bounded opt-in live-provider smoke tests with temporary data.
 
 ## 21. Success Criteria
 

@@ -29,7 +29,9 @@ Future production:
 
 - PostgreSQL.
 
-Implementation should use SQLAlchemy or SQLModel with Alembic migrations so the storage layer can move from SQLite to PostgreSQL without redesigning the domain model.
+The implementation uses SQLAlchemy with Alembic migrations so the storage layer can evolve without rewriting stored domain records.
+
+The Phase 4 baseline represents the complete schema, including report/evidence, conversation/task, comparison, and persistent CV entities. Empty and versioned databases run `alembic upgrade head`. A matching unversioned database is backed up and stamped; incomplete, unexpected, or column-incompatible schemas fail without modification. Unit tests may continue using `Base.metadata.create_all()` only against isolated temporary databases.
 
 ## Modeling Principles
 
@@ -531,7 +533,7 @@ Rules:
 
 ## Migration Notes
 
-Initial Alembic migration should create:
+The baseline Alembic revision represents:
 
 1. `companies`
 2. `reports`
@@ -545,8 +547,14 @@ Initial Alembic migration should create:
 10. `preparation_items`
 11. `cv_tailorings`
 12. `cv_tailoring_suggestions`
+13. report chat and embedding records;
+14. conversations, messages, artifact links, task runs, and ordered task events;
+15. comparison artifacts;
+16. stored CVs, CV versions, job descriptions, and CV recommendation artifacts.
 
 Use string UUIDs for SQLite compatibility.
+
+SQLite connections enable foreign-key enforcement and a five-second busy timeout. Migration adoption and upgrades never delete existing reports, conversations, CV files, embeddings, or historical provider metadata.
 
 When moving to PostgreSQL:
 

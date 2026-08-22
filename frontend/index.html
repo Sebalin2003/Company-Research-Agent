@@ -82,7 +82,8 @@
         </div>
 
         <section class="conversation-view" id="conversationView" aria-label="Conversaci&oacute;n">
-          <div class="conversation-transcript" id="conversationTranscript" tabindex="-1" aria-live="polite"></div>
+          <div class="conversation-transcript" id="conversationTranscript" tabindex="-1" aria-busy="false"></div>
+          <div class="sr-only" id="taskAnnouncements" role="status" aria-live="polite" aria-atomic="true"></div>
 
           <div class="composer-dock">
             <div class="attachment-chips" id="attachmentChips" aria-live="polite"></div>
@@ -206,6 +207,6 @@
 
     <div class="toast-region" id="toastRegion" role="status" aria-live="polite"></div>
 
-    <script src="/static/app.js?v=45" defer></script>
+    <script src="/static/app.js?v=48" defer></script>
   </body>
 </html>

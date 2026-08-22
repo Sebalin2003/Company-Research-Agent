@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -168,6 +169,8 @@ class DeepSeekClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        started = time.monotonic()
+        self.last_usage = {"provider_requests": 1}
         try:
             requester = self.http_client or httpx
             response = requester.post(
@@ -176,21 +179,38 @@ class DeepSeekClient:
                 json=body,
                 timeout=self.timeout_seconds,
             )
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            raise DeepSeekAPIError("DeepSeek request failed.") from exc
-        if response.status_code >= 400:
-            raise DeepSeekAPIError(
-                "DeepSeek API request failed.",
-                status_code=response.status_code,
-                retry_after=response.headers.get("Retry-After"),
+            if response.status_code >= 400:
+                raise DeepSeekAPIError(
+                    "DeepSeek API request failed.",
+                    status_code=response.status_code,
+                    retry_after=response.headers.get("Retry-After"),
+                )
+            try:
+                raw = response.json()
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise DeepSeekAPIError("DeepSeek returned an invalid response.") from exc
+            parsed = parse_deepseek_response(raw)
+            usage = {
+                **parsed.usage,
+                "deepseek_ms": int((time.monotonic() - started) * 1000),
+                "provider_requests": 1,
+            }
+            self.last_usage = usage
+            return DeepSeekResponse(
+                content=parsed.content,
+                finish_reason=parsed.finish_reason,
+                tool_calls=parsed.tool_calls,
+                assistant_message=parsed.assistant_message,
+                usage=usage,
             )
-        try:
-            raw = response.json()
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise DeepSeekAPIError("DeepSeek returned an invalid response.") from exc
-        parsed = parse_deepseek_response(raw)
-        self.last_usage = parsed.usage
-        return parsed
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            self.last_usage["failed_request"] = 1
+            raise DeepSeekAPIError("DeepSeek request failed.") from exc
+        except Exception:
+            self.last_usage["failed_request"] = 1
+            raise
+        finally:
+            self.last_usage["deepseek_ms"] = int((time.monotonic() - started) * 1000)
 
 
 def parse_deepseek_response(raw: Any) -> DeepSeekResponse:

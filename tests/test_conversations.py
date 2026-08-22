@@ -379,12 +379,17 @@ def test_invalid_event_cursor_and_interrupted_task_recovery(
         status="completed",
     )
     task = repo.create_task(conversation, message)
+    task.working_state_json = json.dumps({"stage": "research", "source_ids": ["source-1"]})
+    task.usage_json = json.dumps({"provider_requests": 2, "total_tokens": 120})
     db_session.commit()
 
     assert repo.fail_interrupted_tasks("Reinicio local") == 1
     db_session.commit()
     db_session.refresh(task)
     assert task.status == "failed"
+    assert json.loads(task.pause_reason_json)["type"] == "server_restart"
+    assert json.loads(task.working_state_json)["source_ids"] == ["source-1"]
+    assert json.loads(task.usage_json)["total_tokens"] == 120
     event = db_session.scalar(
         select(models.TaskEvent).where(models.TaskEvent.task_run_id == task.id)
     )

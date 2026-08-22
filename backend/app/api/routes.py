@@ -83,6 +83,7 @@ from backend.app.services.conversation_tasks import run_local_conversation_task
 from backend.app.services.rag import RAGChatCitation, RAGChatResult, RAGChatService, choose_scope
 from backend.app.services.rag_indexing import backfill_missing_report_embeddings
 from backend.app.services.report_chat import ReportChatService
+from backend.app.services.performance import sanitize_usage
 from backend.app.services.research_service import run_mock_generation_task
 
 
@@ -162,6 +163,7 @@ def create_conversation_message(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    request_started = time.monotonic()
     repo = ConversationRepository(db)
     conversation = require_conversation(repo, conversation_id)
     if repo.active_task(conversation.id):
@@ -262,6 +264,10 @@ def create_conversation_message(
             "elapsed_seconds": settings.agent_max_elapsed_seconds,
             "extension_used": False,
         },
+    )
+    task.usage_json = json.dumps(
+        {"acceptance_ms": int((time.monotonic() - request_started) * 1000)},
+        ensure_ascii=False,
     )
     db.commit()
 
@@ -1248,7 +1254,7 @@ def conversation_detail(
                 if latest_task.pause_reason_json
                 else None
             ),
-            usage=safe_json_dict(latest_task.usage_json),
+            usage=sanitize_usage(safe_json_dict(latest_task.usage_json)),
             created_at=latest_task.created_at.isoformat(),
             updated_at=latest_task.updated_at.isoformat(),
             completed_at=latest_task.completed_at.isoformat()

@@ -216,6 +216,16 @@ Responsibilities:
 - session factory;
 - FastAPI DB dependency.
 
+Production startup delegates schema setup to Alembic. Empty/versioned databases upgrade to head; matching unversioned SQLite databases receive a timestamped backup before stamping. Incompatible schemas stop startup with a clear Spanish error. Isolated unit tests may use `Base.metadata.create_all()`.
+
+SQLite connections enable foreign-key enforcement and a five-second busy timeout. WAL is intentionally not enabled because sustained locking has not been observed.
+
+### Recovery and observability
+
+Paused clarification, approval, and review tasks remain resumable across restarts. Interrupted pending/running tasks become failed with a persisted retry event; their messages, artifacts, usage, and working state remain intact, and external calls are never repeated automatically.
+
+SSE events are durable and replayable from the latest event cursor. The browser reconciles the full conversation after stream errors and terminal events and keeps one polling fallback only while work is active. Usage records expose sanitized timings, counts, and tokens without prompts, provider bodies, private document text, or model reasoning. `scripts/benchmark_agent.py` applies warning-only budgets and accepts optional caller-supplied token prices.
+
 ### `app/db/repositories.py`
 
 Persistence operations.

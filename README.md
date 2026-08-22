@@ -33,6 +33,8 @@ frontend/
   index.html      main web UI
   static/         JavaScript and CSS
 
+migrations/       Alembic environment and the complete-schema baseline
+scripts/          operational benchmark command
 docs/             API, database, architecture, and report schema notes
 tests/            pytest coverage for backend, frontend static checks, and flows
 ```
@@ -89,6 +91,19 @@ CV_FILE_MAX_BYTES=10485760
 Use `SEARCH_PROVIDER=mock` for local development without external search. Use `SEARCH_PROVIDER=tavily` when you want real company research through Tavily.
 
 The local `.env`, `.venv`, and SQLite database are ignored by Git.
+
+## Database Migrations
+
+Application startup upgrades an empty or already versioned database to the Alembic head revision. For a matching pre-Alembic database, startup first creates a timestamped SQLite backup and then stamps the current baseline. An unknown, partial, or incompatible schema is rejected with a Spanish diagnostic and is not rewritten.
+
+Operational checks:
+
+```powershell
+.\.venv\Scripts\alembic.exe current
+.\.venv\Scripts\alembic.exe upgrade head
+```
+
+SQLite connections enforce foreign keys and use a five-second busy timeout.
 
 ## Run Locally
 
@@ -155,6 +170,23 @@ Run the test suite with the project virtual environment:
 
 The suite covers conversations and SSE, agent orchestration, report grounding, DeepSeek generation, Gemini embeddings, persistent CV lifecycle and review safety, and frontend contracts.
 
+Live-provider smoke tests are opt-in, bounded, and use temporary database/CV storage:
+
+```powershell
+$env:RUN_LIVE_TESTS="1"
+.\.venv\Scripts\python.exe -m pytest -q -m live tests/test_live_smoke.py
+```
+
+They require configured DeepSeek, Tavily, and Gemini keys. The normal suite never makes paid external calls.
+
+Inspect sanitized latency/token usage from recent terminal tasks:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark_agent.py --limit 20
+```
+
+Optional `--input-cost`, `--output-cost`, and `--cache-hit-cost` values add a cost estimate using prices supplied at command time. Performance budgets are warnings, not test failures.
+
 ## Evidence And Privacy Safeguards
 
 - Reports include sources, evidence, confidence, warnings, and missing-evidence signals.
@@ -168,4 +200,4 @@ The suite covers conversations and SSE, agent orchestration, report grounding, D
 
 ## Current Status
 
-This is an MVP-style local web app with a FastAPI backend, SQLite persistence, a static frontend, tests, and documentation. It is ready for local development and experimentation with mock or real providers depending on environment configuration.
+Phase 4 hardening is implemented for dependable local use: safe schema adoption, restart recovery, SSE reconciliation, sanitized timing/usage measurement, accessibility checks, and bounded opt-in provider tests. The app remains a local single-user system rather than a hosted production service.

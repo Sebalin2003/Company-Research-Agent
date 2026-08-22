@@ -12,7 +12,7 @@ def test_conversational_frontend_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=45" in response.text
+    assert "/static/app.js?v=48" in response.text
     assert "/static/styles.css?v=28" in response.text
     assert "viewport-fit=cover" in response.text
 
@@ -25,6 +25,8 @@ def test_conversational_frontend_index_is_served() -> None:
     assert 'id="mainWorkspace"' in response.text
     assert 'id="conversationView"' in response.text
     assert 'id="conversationTranscript"' in response.text
+    assert 'id="taskAnnouncements"' in response.text
+    assert 'aria-busy="false"' in response.text
     assert 'aria-label="Conversaci&oacute;n"' in response.text
     assert "Agente DeepSeek" in response.text
 
@@ -120,6 +122,12 @@ def test_conversational_frontend_assets_are_served() -> None:
     assert "new EventSource" in js
     assert "pollActiveTaskState" in js
     assert "events?after_event_id=${cursor}" in js
+    assert "eventCursors" in js
+    assert "eventStreamUrl" in js
+    assert "aria-busy" in js
+    assert "dialogReturnFocus" in js
+    assert "restoreFocus: true" in js
+    assert 'document.querySelector("dialog[open]")' in js
     assert "resumeTask" in js
     assert "renderPauseRequest" in js
     assert "renderComparisonArtifact" in js
