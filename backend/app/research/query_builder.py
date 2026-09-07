@@ -21,10 +21,13 @@ def build_fast_company_research_queries(company_name: str) -> list[SearchQuery]:
         SearchQuery(EvidenceTopic.salary, f"{display} sueldos Argentina Glassdoor"),
         SearchQuery(EvidenceTopic.salary, f"{display} sueldos OpenQube"),
         SearchQuery(EvidenceTopic.benefits, f"{display} beneficios empleados Argentina"),
-        SearchQuery(EvidenceTopic.culture, f"{display} opiniones empleados cultura"),
+        SearchQuery(EvidenceTopic.culture, f"{display} opiniones empleados cultura Glassdoor"),
         SearchQuery(EvidenceTopic.interview_process, f"{display} proceso entrevista preguntas"),
         SearchQuery(EvidenceTopic.interview_questions, f"{display} interview questions"),
-        SearchQuery(EvidenceTopic.open_roles, f"{display} carreras empleos Argentina"),
+        SearchQuery(
+            EvidenceTopic.open_roles,
+            f"{display} carreras empleos Argentina LinkedIn Computrabajo Bumeran ZonaJobs",
+        ),
     ]
 
 
@@ -57,7 +60,10 @@ def build_deepening_company_research_queries(company_name: str) -> list[SearchQu
         SearchQuery(EvidenceTopic.interview_process, f"{display} dificultad entrevista Glassdoor"),
         SearchQuery(EvidenceTopic.interview_questions, f"{display} preguntas entrevista Glassdoor"),
         SearchQuery(EvidenceTopic.open_roles, f"{display} jobs careers Argentina"),
-        SearchQuery(EvidenceTopic.open_roles, f"{display} vacantes Argentina LinkedIn"),
+        SearchQuery(
+            EvidenceTopic.open_roles,
+            f"{display} vacantes Argentina LinkedIn Computrabajo Bumeran ZonaJobs Indeed Get on Board Portal Empleo",
+        ),
     ]
 
 

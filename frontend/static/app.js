@@ -2,7 +2,6 @@
   "pending",
   "running",
   "needs_clarification",
-  "awaiting_approval",
   "awaiting_review",
 ]);
 
@@ -244,7 +243,6 @@ function statusLabel(status) {
     pending: "Pendiente",
     running: "Respuesta en curso",
     needs_clarification: "Necesita aclaración",
-    awaiting_approval: "Esperando aprobación",
     awaiting_review: "Esperando revisión",
     completed: "Completada",
     cancelled: "Cancelada",
@@ -363,10 +361,14 @@ function renderConversation({ scrollToBottom = false } = {}) {
   els.composerText.placeholder = "Escribí un mensaje o pedí una tarea";
 
   const messages = conversation?.messages || [];
-  let transcript = messages.length ? messages.map(renderMessage).join("") : renderEmptyConversation();
-  transcript += renderGeneratedArtifacts(conversation);
+  let transcript = messages.length
+    ? messages.map((message) => (
+      renderMessage(message) + renderGeneratedArtifacts(conversation, message.message_id)
+    )).join("")
+    : renderEmptyConversation();
+  transcript += renderGeneratedArtifacts(conversation, null);
   if (running) transcript += renderLiveProgress();
-  if (["needs_clarification", "awaiting_approval"].includes(conversation?.current_task?.status)) {
+  if (conversation?.current_task?.status === "needs_clarification") {
     transcript += renderPauseRequest(conversation.current_task);
   }
   if (conversation?.current_task?.status === "cancelled") {
@@ -464,12 +466,6 @@ function renderLiveProgress() {
 
 function renderPauseRequest(task) {
   const pause = task.pause || {};
-  if (task.status === "awaiting_approval") {
-    return `<section class="decision-card warning" data-artifact-type="approval-request">
-      <strong>Se necesita tu aprobación</strong><p>${escapeHtml(pause.prompt || "¿Querés ampliar la investigación?")}</p>
-      <div class="decision-actions"><button class="primary-button" type="button" data-task-resume="approval" data-decision="approved">Continuar</button><button class="secondary-button" type="button" data-task-resume="approval" data-decision="rejected">Finalizar con lo disponible</button></div>
-    </section>`;
-  }
   const options = (pause.options || []).map((option) => `<button class="secondary-button" type="button" data-task-resume="clarification" data-option-id="${escapeHtml(option.id)}">${escapeHtml(option.label)}</button>`).join("");
   return `<section class="decision-card" data-artifact-type="clarification-request">
     <strong>Necesito una aclaración</strong><p>${escapeHtml(pause.prompt || "Agregá la información necesaria para continuar.")}</p>
@@ -479,8 +475,14 @@ function renderPauseRequest(task) {
   </section>`;
 }
 
-function renderGeneratedArtifacts(conversation) {
-  const generated = (conversation?.artifacts || []).filter((item) => item.relationship_type === "generated");
+function renderGeneratedArtifacts(conversation, messageId) {
+  const generated = (conversation?.artifacts || []).filter((item) => (
+    item.relationship_type === "generated"
+    && (
+      messageId === undefined
+      || (messageId === null ? !item.message_id : item.message_id === messageId)
+    )
+  ));
   return generated.map((item) => {
     const payload = state.artifactPayloads[`${item.type}:${item.artifact_id}`];
     if (!payload) return `<section class="artifact artifact-loading" data-artifact-type="${escapeHtml(item.type)}"><p>Cargando artefacto…</p></section>`;
@@ -793,7 +795,6 @@ function openEventStream(eventsUrl) {
     "tool.completed",
     "artifact.created",
     "clarification.required",
-    "approval.required",
     "review.required",
     "message.started",
     "message.delta",
@@ -878,15 +879,11 @@ async function handleStreamEvent(event) {
     if (payload.label) announceTask(payload.label);
   } else if (event.type === "artifact.created") {
     await refreshActiveConversation();
-  } else if (["clarification.required", "approval.required", "review.required"].includes(event.type)) {
+  } else if (["clarification.required", "review.required"].includes(event.type)) {
     conversation.current_task = {
       ...(conversation.current_task || {}),
       task_run_id: payload.task_run_id,
-      status: event.type === "clarification.required"
-        ? "needs_clarification"
-        : event.type === "approval.required"
-          ? "awaiting_approval"
-          : "awaiting_review",
+      status: event.type === "clarification.required" ? "needs_clarification" : "awaiting_review",
       pause: payload,
     };
     state.progress = null;
@@ -1381,12 +1378,8 @@ els.conversationTranscript.addEventListener("click", (event) => {
   }
   const resume = event.target.closest("[data-task-resume]");
   if (resume) {
-    if (resume.dataset.taskResume === "approval") {
-      resumeActiveTask({ response_type: "approval", decision: resume.dataset.decision, content: null, selected_option_ids: [] });
-      return;
-    }
     if (resume.dataset.taskResume === "clarification") {
-      resumeActiveTask({ response_type: "clarification", decision: null, content: null, selected_option_ids: [resume.dataset.optionId] });
+      resumeActiveTask({ response_type: "clarification", content: null, selected_option_ids: [resume.dataset.optionId] });
       return;
     }
     const input = els.conversationTranscript.querySelector("[data-clarification-input]");
@@ -1395,7 +1388,7 @@ els.conversationTranscript.addEventListener("click", (event) => {
       input?.focus();
       return;
     }
-    resumeActiveTask({ response_type: "clarification", decision: null, content, selected_option_ids: [] });
+    resumeActiveTask({ response_type: "clarification", content, selected_option_ids: [] });
     return;
   }
   const starter = event.target.closest("[data-starter-prompt]");

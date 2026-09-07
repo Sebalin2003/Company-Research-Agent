@@ -6,6 +6,8 @@ from backend.app.domain.reports import ConfidenceLevel, EvidenceTopic, SourceTyp
 from backend.app.domain.reports import StructuredReportSchema
 from backend.app.llm.synthesizer import SynthesisRequest
 from backend.app.research.types import ClassifiedEvidence, ScoredSource
+from backend.app.services.report_quality import allowed_topics_for
+from backend.app.domain.reports import SectionType
 
 
 MAX_EXCERPT_CHARACTERS = 450
@@ -29,9 +31,10 @@ Sos un asistente de investigacion laboral para personas que buscan trabajo en Ar
 Tu respuesta debe ser JSON valido y todo texto visible para el usuario debe estar en espanol.
 Usa solo la evidencia entregada. No inventes fuentes, empleados, sueldos, beneficios, puestos ni datos del CV.
 Cuando falte evidencia, declaralo como missing_evidence.
-Las afirmaciones factuales deben citar evidence_ids y copiar un supporting_quote textual del raw_text_excerpt citado.
-supporting_quote es obligatorio para claims fact e inference, debe tener como maximo 450 caracteres y no debe ser una parafrasis.
-Las claims recommendation y missing_evidence deben usar supporting_quote=null.
+Las afirmaciones factuales deben citar evidence_ids y seleccionar supporting_quote_id igual al id de una de esas evidencias.
+El backend recupera supporting_quote literalmente del raw_text_excerpt autorizado: no copies ni inventes la cita.
+El fragmento seleccionado debe respaldar toda la afirmacion, incluidos numeros y ubicacion; si no alcanza, limita la afirmacion.
+Las claims recommendation y missing_evidence deben usar supporting_quote_id=null y supporting_quote=null.
 El informe debe respetar esta estructura de secciones y este orden:
 1. executive_summary: resumen breve y lo primero que debe saber una persona candidata.
 2. business: que hace la empresa, productos, servicios y modelo de negocio si hay evidencia.
@@ -52,6 +55,11 @@ En salary_benefits:
 - separa esos niveles si hay evidencia numerica por rol;
 - si solo hay salarios generales o de otros niveles, aclara que no son especificos para IT trainee/pasantia/junior;
 - no conviertas ni actualices montos por inflacion si la fuente no lo dice.
+En culture e interview_process, si la evidencia proviene de una plataforma de reseñas, presentala como
+una señal agregada de esa plataforma, no como un hecho oficial ni una garantía para IBM Argentina.
+En employees, los datos históricos deben indicarse como históricos y no describir la plantilla actual.
+En open_roles, los conteos de plataformas son dinámicos: mencioná la plataforma y que se consultaron al
+momento de la investigación; no los presentes como una cantidad estable ni como una vacante confirmada.
 Usa resumenes concisos. Evita copiar textos largos de las fuentes.
 Inclui como maximo una claim factual por seccion; si la seccion es incierta, usa missing_evidence.
 """
@@ -61,17 +69,22 @@ def build_report_user_prompt(request: SynthesisRequest) -> str:
     payload = build_compact_report_payload(request)
     return (
         "Genera un informe compatible con el schema del backend. "
-        "Inclui todas las secciones requeridas del PRD, fuentes, evidencia, advertencias y metadata. "
+        "Inclui las secciones requeridas, advertencias y personalizacion solicitada. "
+        "No generes listas de fuentes o evidencia ni metadata: las incorpora el backend. "
+        "No renumeres evidence_ids. Respeta allowed_evidence_ids_by_section. "
         "Si hay CV, genera preparacion personalizada. "
         "Si se pidio tailoring, genera sugerencias seguras sin modificar el CV original. "
         "Cita solo evidence_ids presentes en el contexto. "
-        "Para cada claim fact o inference, inclui supporting_quote copiando textualmente hasta 450 caracteres del raw_text_excerpt citado. "
+        "Para cada claim fact o inference, inclui supporting_quote_id seleccionando el id de la evidencia que respalda la afirmacion; debe estar tambien en evidence_ids. "
         "No muestres ni expliques supporting_quote fuera del campo JSON interno. "
         "Escribi resumenes breves y como maximo una claim por seccion. "
         "Para direccion, empleados, salarios, beneficios, entrevistas y vacantes, usa valores exactos solo si aparecen en el contexto; "
         "si no aparecen, escribe \"No disponible en las fuentes consultadas\" o \"Evidencia insuficiente\". "
         "En sueldos, prioriza perfiles IT trainee, pasantia/internship y junior en Argentina; "
         "si no hay montos para esos niveles, indicalo explicitamente y no uses rangos generales como si fueran entry-level. "
+        "Para cultura o entrevistas de plataformas de reseñas, aclara que son señales agregadas de la plataforma. "
+        "Para empleados históricos, aclara que el dato no describe la plantilla actual. "
+        "Para conteos de vacantes, identifica la plataforma y aclara que el conteo se consultó durante esta investigación. "
         "Contexto estructurado compactado:\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
@@ -118,6 +131,14 @@ def build_compact_report_payload(request: SynthesisRequest) -> dict:
             "text": request.cv_text if request.include_cv else None,
         },
     }
+    payload["allowed_evidence_ids_by_section"] = {
+        section.value: [
+            item["id"] for item in payload["evidence"]
+            if allowed_topics_for(section) is None
+            or item["topic"] in allowed_topics_for(section)
+        ]
+        for section in SectionType
+    }
     return (
         payload
     )
@@ -129,6 +150,8 @@ def build_repair_prompt(invalid_output: str, validation_error: str) -> str:
         "Devuelve solo JSON valido compatible con el schema del backend. "
         "No agregues Markdown ni explicaciones. "
         "Conserva los hechos y evidencia_ids disponibles; no inventes fuentes ni datos. "
+        "Si fallo supporting_quote, corrige la claim identificada y selecciona supporting_quote_id "
+        "entre los IDs autorizados del contexto original. No inventes texto ni IDs de evidencia. "
         "Error de validacion resumido:\n"
         f"{truncate_text(validation_error, 2000)}\n"
         "Respuesta invalida a reparar:\n"

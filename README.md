@@ -50,6 +50,7 @@ tests/            pytest coverage for backend, frontend static checks, and flows
 7. Accepted review decisions may optionally create a new text-only CV version; originals are never overwritten.
 
 The conversational agent lets DeepSeek choose among bounded tools. The backend still executes tools and enforces evidence, citation, budget, validation, and persistence rules.
+Normal requests use a fixed 12-decision, 6-search, 10-inspection, 180-second budget. Explicit reports use 16, 12, 20, and 300 seconds. Reaching either limit completes automatically with a grounded result or a transparent explanation of what could not be verified.
 
 ## Requirements
 
@@ -130,7 +131,7 @@ http://127.0.0.1:8000/docs
 - `POST/GET /api/conversations` creates or lists persistent conversations.
 - `POST /api/conversations/{conversation_id}/messages` starts an agent task.
 - `GET /api/conversations/{conversation_id}/events` streams persisted SSE events.
-- `POST /api/task-runs/{task_run_id}/resume` resumes clarification, approval, or CV review.
+- `POST /api/task-runs/{task_run_id}/resume` resumes clarification or CV review.
 - `POST/GET /api/cvs` uploads or lists stored CVs.
 - `GET/PATCH/DELETE /api/cvs/{cv_id}` reads, edits, or deletes one stored CV.
 - `POST /api/cvs/{cv_id}/versions` uploads a replacement version.

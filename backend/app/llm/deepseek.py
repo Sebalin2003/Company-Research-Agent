@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, Union
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from backend.app.core.time import utc_now
-from backend.app.domain.reports import ClaimSchema, SectionSchema, StructuredReportSchema
+from backend.app.domain.reports import ClaimSchema, SectionSchema, SectionType, StructuredReportSchema
 from backend.app.llm.prompts import (
     SYSTEM_PROMPT,
     build_compact_report_payload,
@@ -17,9 +18,18 @@ from backend.app.llm.prompts import (
     build_report_user_prompt,
 )
 from backend.app.llm.synthesizer import SynthesisError, SynthesisRequest
-from backend.app.services.report_quality import validate_and_strip_supporting_quotes
+from backend.app.services.report_quality import (
+    allowed_topics_for,
+    supporting_quote_failure,
+    validate_and_strip_supporting_quotes,
+)
 
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
+REPAIRABLE_QUOTE_SECTIONS = {
+    SectionType.executive_summary,
+    SectionType.business,
+    SectionType.argentina_presence,
+}
 
 
 class DeepSeekAPIError(RuntimeError):
@@ -268,6 +278,7 @@ def parse_deepseek_response(raw: Any) -> DeepSeekResponse:
 
 
 class DeepSeekClaimSchema(ClaimSchema):
+    supporting_quote_id: str | None = None
     supporting_quote: str | None = None
 
 
@@ -277,6 +288,41 @@ class DeepSeekSectionSchema(SectionSchema):
 
 class DeepSeekReportSchema(StructuredReportSchema):
     sections: list[DeepSeekSectionSchema] = Field(default_factory=list)
+
+
+# Only editable content is generated; source IDs and report metadata belong to the backend.
+DeepSeekGenerationSchema = create_model(
+    "DeepSeekGenerationSchema",
+    sections=(list[DeepSeekSectionSchema], ...),
+    **{
+        name: (StructuredReportSchema.model_fields[name].annotation,
+               StructuredReportSchema.model_fields[name])
+        for name in ("warnings", "personalized_preparation", "cv_tailoring")
+    },
+)
+
+
+def report_generation_schema(request: SynthesisRequest) -> type[BaseModel]:
+    """Constrain citation choices to the evidence authorized for each section."""
+    mapping = build_compact_report_payload(request)["allowed_evidence_ids_by_section"]
+    sections = []
+    for section_type in list(SectionType)[:9]:
+        ids = mapping[section_type.value]
+        id_type = Literal[tuple(ids)] if ids else type(None)
+        claim = create_model(
+            f"Claim_{section_type.value}", __base__=DeepSeekClaimSchema,
+            evidence_ids=(list[id_type], Field(default_factory=list)),
+            supporting_quote_id=(id_type | None, None),
+        )
+        sections.append(create_model(
+            f"Section_{section_type.value}", __base__=DeepSeekSectionSchema,
+            type=(Literal[section_type.value], ...),
+            claims=(list[claim], Field(default_factory=list)),
+        ))
+    return create_model(
+        "AuthorizedReport", __base__=DeepSeekGenerationSchema,
+        sections=(list[Union[tuple(sections)]], ...),
+    )
 
 
 class DeepSeekReportSynthesizer:
@@ -301,7 +347,7 @@ class DeepSeekReportSynthesizer:
             self.api_key, self.model, self.timeout_seconds
         )
         try:
-            response = self.generate_content(client, build_report_user_prompt(request))
+            response = self.generate_content(client, build_report_user_prompt(request), request)
             return validate_response(response, request, self.model)
         except DeepSeekAPIError as first_error:
             if first_error.raw_content is None:
@@ -317,7 +363,8 @@ class DeepSeekReportSynthesizer:
             raise SynthesisError("DeepSeek request failed before receiving a valid response.") from exc
         try:
             repair_response = self.generate_content(
-                client, build_repair_prompt(invalid_output, first_error_text)
+                client, build_report_user_prompt(request) + "\n\n"
+                + build_repair_prompt(invalid_output, first_error_text), request
             )
         except Exception as exc:
             raise SynthesisError(
@@ -331,11 +378,11 @@ class DeepSeekReportSynthesizer:
                 f"{short_error(repair_error)}"
             ) from repair_error
 
-    def generate_content(self, client: Any, contents: str) -> dict[str, Any]:
+    def generate_content(self, client: Any, contents: str, request: SynthesisRequest) -> dict[str, Any]:
         return client.generate_json(
             SYSTEM_PROMPT,
             contents,
-            DeepSeekReportSchema,
+            report_generation_schema(request),
             max_tokens=self.max_output_tokens,
             temperature=0.2,
         )
@@ -344,15 +391,56 @@ class DeepSeekReportSynthesizer:
 def validate_response(
     response: dict[str, Any], request: SynthesisRequest, model: str
 ) -> StructuredReportSchema:
-    raw_report = normalize_report_payload(dict(response), request, model)
+    raw_report = normalize_report_payload(deepcopy(response), request, model)
     try:
         internal_report = DeepSeekReportSchema.model_validate(raw_report)
-        public_payload = validate_and_strip_supporting_quotes(
-            internal_report.model_dump(mode="json")
-        )
-        return StructuredReportSchema.model_validate(public_payload)
+        payload = internal_report.model_dump(mode="json")
+        evidence_by_id = {item["id"]: item for item in payload["evidence"]}
+        failures = []
+        for section in payload["sections"]:
+            for claim in section["claims"]:
+                quote_id = claim.pop("supporting_quote_id", None)
+                if quote_id is not None:
+                    evidence = evidence_by_id.get(quote_id)
+                    claim["supporting_quote"] = (
+                        evidence["raw_text_excerpt"]
+                        if evidence and quote_id in claim["evidence_ids"]
+                        else None
+                    )
+                if claim["type"] not in {"fact", "inference"}:
+                    continue
+                reason = supporting_quote_failure(
+                    claim, claim.get("supporting_quote"), evidence_by_id,
+                    allowed_topics_for(section["type"]),
+                )
+                if reason and section["type"] in REPAIRABLE_QUOTE_SECTIONS:
+                    failures.append({
+                        "section": section["type"], "claim_id": claim["id"],
+                        "reason": reason,
+                        "allowed_quote_ids": [
+                            item["id"] for item in payload["evidence"]
+                            if allowed_topics_for(section["type"]) is None
+                            or item["topic"] in allowed_topics_for(section["type"])
+                        ],
+                    })
+        if failures:
+            raise SynthesisError("Supporting quote validation failed: " + json.dumps(failures))
+        public_payload = validate_and_strip_supporting_quotes(payload)
+        report = StructuredReportSchema.model_validate(public_payload)
     except ValidationError as exc:
         raise SynthesisError("DeepSeek response did not match report schema.") from exc
+    failed_sections = [
+        warning.related_section.value
+        for warning in report.warnings
+        if warning.type == "supporting_quote_validation_failed"
+        and warning.related_section in REPAIRABLE_QUOTE_SECTIONS
+    ]
+    if failed_sections:
+        raise SynthesisError(
+            "Supporting quote validation failed for required sections: "
+            + ", ".join(failed_sections)
+        )
+    return report
 
 
 def response_text(response: Any) -> str:

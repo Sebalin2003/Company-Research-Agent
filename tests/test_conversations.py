@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.app.core.config import Settings
 from backend.app.db import models
 from backend.app.db.conversation_repository import ConversationRepository
 from backend.app.db.models import Base
@@ -245,7 +246,7 @@ def test_failed_task_retry_reuses_task_without_duplicating_user_message(
     assert len(ConversationRepository(db_session).list_messages(conversation_id)) == messages_before
 
 
-def test_paused_task_resume_accepts_clarification_and_one_budget_extension(
+def test_paused_task_resume_accepts_clarification_but_not_budget_approval(
     client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("backend.app.api.routes.run_local_conversation_task", lambda *_: None)
@@ -266,7 +267,6 @@ def test_paused_task_resume_accepts_clarification_and_one_budget_extension(
         f"/api/task-runs/{clarification_task.id}/resume",
         json={
             "response_type": "clarification",
-            "decision": None,
             "content": "Backend junior",
             "selected_option_ids": [],
         },
@@ -275,39 +275,177 @@ def test_paused_task_resume_accepts_clarification_and_one_budget_extension(
     assert resumed.json()["status"] == "pending"
     assert ConversationRepository(db_session).list_messages(clarification_conversation)[-1].content == "Backend junior"
 
-    approval_conversation = create_conversation(client)["conversation_id"]
-    approved_task_response = client.post(
-        f"/api/conversations/{approval_conversation}/messages",
-        json={"content": "Investigá Acme", "attachments": []},
-    ).json()
-    approval_task = db_session.get(models.TaskRun, approved_task_response["task_run_id"])
-    approval_task.status = "awaiting_approval"
-    approval_task.pause_reason_json = json.dumps({"type": "budget_extension", "prompt": "¿Continuar?"})
-    db_session.commit()
-
-    approved = client.post(
-        f"/api/task-runs/{approval_task.id}/resume",
-        json={
-            "response_type": "approval",
-            "decision": "approved",
-            "content": None,
-            "selected_option_ids": [],
-        },
-    )
-    assert approved.status_code == 202
-    db_session.refresh(approval_task)
-    budget = json.loads(approval_task.budget_json)
-    assert budget["extension_used"] is True
-    assert budget["model_turns"] == 18
-
-    approval_task.status = "awaiting_approval"
-    db_session.commit()
-    repeated = client.post(
-        f"/api/task-runs/{approval_task.id}/resume",
+    removed = client.post(
+        f"/api/task-runs/{clarification_task.id}/resume",
         json={"response_type": "approval", "decision": "approved"},
     )
-    assert repeated.status_code == 409
-    assert repeated.json()["error"]["code"] == "budget_extension_already_used"
+    assert removed.status_code == 422
+
+
+def test_affirmative_report_clarification_resumes_full_report(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("backend.app.api.routes.run_local_conversation_task", lambda *_: None)
+    monkeypatch.setattr(
+        "backend.app.api.routes.get_settings",
+        lambda: Settings(
+            agent_report_max_model_turns=16,
+            agent_report_max_searches=12,
+            agent_report_max_inspections=20,
+            agent_report_max_elapsed_seconds=300,
+        ),
+    )
+    conversation_id = create_conversation(client)["conversation_id"]
+    accepted = client.post(
+        f"/api/conversations/{conversation_id}/messages",
+        json={"content": "Accenture", "attachments": []},
+    ).json()
+    task = db_session.get(models.TaskRun, accepted["task_run_id"])
+    task.status = "needs_clarification"
+    task.pause_reason_json = json.dumps(
+        {
+            "type": "clarification",
+            "prompt": "¿Querés que genere un informe completo sobre Accenture como empleador en Argentina?",
+            "options": [],
+        }
+    )
+    task.working_state_json = json.dumps(
+        {
+            "goal": "Accenture",
+            "request_intent": "standard",
+            "pending_clarification": {
+                "question": "¿Querés que genere un informe completo sobre Accenture como empleador en Argentina?",
+                "options": [{"id": "accenture_ar", "label": "Sí, informe sobre Accenture Argentina"}],
+            },
+        }
+    )
+    db_session.commit()
+
+    resumed = client.post(
+        f"/api/task-runs/{task.id}/resume",
+        json={
+            "response_type": "clarification",
+            "content": None,
+            "selected_option_ids": ["accenture_ar"],
+        },
+    )
+
+    assert resumed.status_code == 202
+    db_session.refresh(task)
+    assert json.loads(task.budget_json)["profile"] == "full_report"
+    state = json.loads(task.working_state_json)
+    assert state["request_intent"] == "full_report"
+    assert state["requires_grounding"] is True
+    assert state["company_name"] == "Accenture"
+    assert "informe completo" in state["goal"]
+
+
+def test_company_clarification_option_starts_grounded_standard_research(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("backend.app.api.routes.run_local_conversation_task", lambda *_: None)
+    conversation_id = create_conversation(client)["conversation_id"]
+    accepted = client.post(
+        f"/api/conversations/{conversation_id}/messages",
+        json={"content": "stanley", "attachments": []},
+    ).json()
+    task = db_session.get(models.TaskRun, accepted["task_run_id"])
+    task.status = "needs_clarification"
+    task.pause_reason_json = json.dumps(
+        {"type": "clarification", "prompt": "¿Huawei o Stanley?", "options": []}
+    )
+    task.working_state_json = json.dumps(
+        {
+            "goal": "stanley",
+            "request_intent": "standard",
+            "pending_clarification": {
+                "question": "¿Querés investigar una de estas empresas?",
+                "options": [{"id": "stanley", "label": "Investigar Stanley en Argentina"}],
+            },
+        }
+    )
+    db_session.commit()
+
+    resumed = client.post(
+        f"/api/task-runs/{task.id}/resume",
+        json={
+            "response_type": "clarification",
+            "content": None,
+            "selected_option_ids": ["stanley"],
+        },
+    )
+
+    assert resumed.status_code == 202
+    db_session.refresh(task)
+    state = json.loads(task.working_state_json)
+    assert state["company_name"] == "Stanley"
+    assert state["requires_grounding"] is True
+    assert state["request_intent"] == "standard"
+    assert state["pending_clarification"] is None
+    assert state["goal"] == "Investigá a Stanley como empleador en Argentina."
+
+
+def test_message_tasks_use_standard_and_full_report_budget_profiles(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("backend.app.api.routes.run_local_conversation_task", lambda *_: None)
+    monkeypatch.setattr(
+        "backend.app.api.routes.get_settings",
+        lambda: Settings(
+            agent_max_model_turns=12,
+            agent_max_searches=6,
+            agent_max_inspections=10,
+            agent_max_elapsed_seconds=180,
+            agent_report_max_model_turns=16,
+            agent_report_max_searches=12,
+            agent_report_max_inspections=20,
+            agent_report_max_elapsed_seconds=300,
+        ),
+    )
+
+    standard_conversation = create_conversation(client)["conversation_id"]
+    standard = client.post(
+        f"/api/conversations/{standard_conversation}/messages",
+        json={"content": "Investigá Acme", "attachments": []},
+    ).json()
+    standard_task = db_session.get(models.TaskRun, standard["task_run_id"])
+    assert json.loads(standard_task.budget_json) == {
+        "profile": "standard",
+        "model_turns": 12,
+        "searches": 6,
+        "inspections": 10,
+        "elapsed_seconds": 180,
+    }
+
+    report_conversation = create_conversation(client)["conversation_id"]
+    report = client.post(
+        f"/api/conversations/{report_conversation}/messages",
+        json={"content": "Generá un informe de Acme", "attachments": []},
+    ).json()
+    report_task = db_session.get(models.TaskRun, report["task_run_id"])
+    assert json.loads(report_task.budget_json) == {
+        "profile": "full_report",
+        "model_turns": 16,
+        "searches": 12,
+        "inspections": 20,
+        "elapsed_seconds": 300,
+    }
+
+
+def test_startup_retires_legacy_budget_approval_tasks(db_session: Session) -> None:
+    repo = ConversationRepository(db_session)
+    conversation = repo.create()
+    message = repo.add_message(conversation, role="user", content="Investigá Acme", status="completed")
+    task = repo.create_task(conversation, message)
+    task.status = "awaiting_approval"
+    db_session.commit()
+
+    assert repo.fail_interrupted_tasks("Tarea interrumpida.") == 1
+    db_session.commit()
+
+    assert task.status == "failed"
+    assert task.stopping_reason == "budget_extension_removed"
+    assert "ampliación de presupuesto ya no está disponible" in (task.pause_reason_json or "")
 
 
 def test_report_attachment_survives_conversation_deletion(
@@ -332,6 +470,32 @@ def test_report_attachment_survives_conversation_deletion(
 
     assert client.delete(f"/api/conversations/{conversation_id}").status_code == 204
     assert db_session.get(models.Report, report_id) is not None
+
+
+def test_generated_artifact_without_legacy_message_link_is_ordered_after_prompt(
+    client: TestClient, db_session: Session
+) -> None:
+    conversation_id = create_conversation(client)["conversation_id"]
+    conversation = db_session.get(models.Conversation, conversation_id)
+    message = ConversationRepository(db_session).add_message(
+        conversation,
+        role="user",
+        content="Generá un informe sobre Acme.",
+        status="completed",
+    )
+    company = CompanyRepository(db_session).get_or_create("Acme")
+    report = ReportRepository(db_session).create_report(company.id)
+    ConversationRepository(db_session).add_artifact_link(
+        conversation,
+        artifact_type="report",
+        artifact_id=report.id,
+        relationship_type="generated",
+    )
+    db_session.commit()
+
+    detail = client.get(f"/api/conversations/{conversation_id}").json()
+
+    assert detail["artifacts"][0]["message_id"] == message.id
 
 
 def test_invalid_and_cv_attachments_are_rejected(client: TestClient) -> None:

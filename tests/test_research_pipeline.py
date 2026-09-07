@@ -34,6 +34,10 @@ def test_build_company_research_queries_covers_required_topics() -> None:
     assert "glassdoor" in query_text
     assert "indeed" in query_text
     assert "openqube" in query_text
+    assert "computrabajo" in query_text
+    assert "bumeran" in query_text
+    assert "zonajobs" in query_text
+    assert "portal empleo" in query_text
     assert "remuneracion empleo argentina" in query_text
     assert "direccion oficinas argentina" in query_text
     assert "cantidad de empleados" in query_text
@@ -86,6 +90,73 @@ def test_source_type_classification_prefers_company_owned_domains() -> None:
         )
         == SourceType.official
     )
+    assert (
+        classify_source_type(
+            "IBM Argentina",
+            "https://latam.newsroom.ibm.com/2023-10-ibm-argentina",
+            EvidenceTopic.argentina_presence,
+        )
+        == SourceType.official
+    )
+    assert (
+        classify_source_type(
+            "Globant Argentina",
+            "https://www.globant.com/about",
+            EvidenceTopic.business,
+        )
+        == SourceType.official
+    )
+    assert (
+        classify_source_type(
+            "Globant Argentina",
+            "https://www.globant.com/careers",
+            EvidenceTopic.open_roles,
+        )
+        == SourceType.career_page
+    )
+
+
+def test_official_digital_services_page_provides_business_evidence() -> None:
+    source = ScoredSource(
+        source_id="globant-official",
+        title="Globant AI Powerhouse",
+        url="https://www.globant.com/es",
+        domain="globant.com",
+        source_type=SourceType.official,
+        reliability_score=5,
+        snippet="Soluciones enterprise impulsadas por inteligencia artificial.",
+        is_current=True,
+    )
+    content = ExtractedContent(
+        url=source.url,
+        title=source.title,
+        text=(
+            "Transformamos organizaciones mediante inteligencia artificial. "
+            "Nuestras soluciones combinan ingeniería, innovación y diseño."
+        ),
+    )
+
+    business = next(
+        item for item in classify_evidence(source, content)
+        if item.topic == EvidenceTopic.business
+    )
+
+    assert business.confidence == ConfidenceLevel.medium
+
+
+def test_source_type_classifies_relevant_employment_platforms() -> None:
+    sources = {
+        "https://www.linkedin.com/company/acme": SourceType.linkedin,
+        "https://www.linkedin.com/jobs/view/123": SourceType.job_board,
+        "https://www.glassdoor.com.ar/Acme": SourceType.salary_review_platform,
+        "https://www.computrabajo.com.ar/acme": SourceType.job_board,
+        "https://www.bumeran.com.ar/acme": SourceType.job_board,
+        "https://www.zonajobs.com.ar/acme": SourceType.job_board,
+        "https://portalempleo.gob.ar/OfertasLaborales": SourceType.job_board,
+    }
+
+    for url, expected in sources.items():
+        assert classify_source_type("Acme", url, EvidenceTopic.open_roles) == expected
 
 
 def test_score_search_result_uses_source_type_https_and_rank() -> None:

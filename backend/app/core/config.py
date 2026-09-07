@@ -39,6 +39,10 @@ class Settings:
     agent_max_searches: int = 6
     agent_max_inspections: int = 10
     agent_max_elapsed_seconds: int = 180
+    agent_report_max_model_turns: int = 16
+    agent_report_max_searches: int = 12
+    agent_report_max_inspections: int = 20
+    agent_report_max_elapsed_seconds: int = 300
 
 
 def get_settings() -> Settings:
@@ -128,6 +132,21 @@ def get_settings() -> Settings:
         ),
         agent_max_elapsed_seconds=int(
             os.getenv("AGENT_MAX_ELAPSED_SECONDS", str(Settings.agent_max_elapsed_seconds))
+        ),
+        agent_report_max_model_turns=int(
+            os.getenv("AGENT_REPORT_MAX_MODEL_TURNS", str(Settings.agent_report_max_model_turns))
+        ),
+        agent_report_max_searches=int(
+            os.getenv("AGENT_REPORT_MAX_SEARCHES", str(Settings.agent_report_max_searches))
+        ),
+        agent_report_max_inspections=int(
+            os.getenv("AGENT_REPORT_MAX_INSPECTIONS", str(Settings.agent_report_max_inspections))
+        ),
+        agent_report_max_elapsed_seconds=int(
+            os.getenv(
+                "AGENT_REPORT_MAX_ELAPSED_SECONDS",
+                str(Settings.agent_report_max_elapsed_seconds),
+            )
         ),
     )
 

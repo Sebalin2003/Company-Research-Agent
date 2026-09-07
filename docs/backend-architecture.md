@@ -222,7 +222,7 @@ SQLite connections enable foreign-key enforcement and a five-second busy timeout
 
 ### Recovery and observability
 
-Paused clarification, approval, and review tasks remain resumable across restarts. Interrupted pending/running tasks become failed with a persisted retry event; their messages, artifacts, usage, and working state remain intact, and external calls are never repeated automatically.
+Paused clarification and review tasks remain resumable across restarts. Interrupted pending/running tasks become failed with a persisted retry event; their messages, artifacts, usage, and working state remain intact, and external calls are never repeated automatically. Fixed task budgets complete automatically with evidence-backed output or a transparent limitation response.
 
 SSE events are durable and replayable from the latest event cursor. The browser reconciles the full conversation after stream errors and terminal events and keeps one polling fallback only while work is active. Usage records expose sanitized timings, counts, and tokens without prompts, provider bodies, private document text, or model reasoning. `scripts/benchmark_agent.py` applies warning-only budgets and accepts optional caller-supplied token prices.
 

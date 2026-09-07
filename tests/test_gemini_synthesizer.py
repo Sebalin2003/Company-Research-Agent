@@ -79,6 +79,26 @@ def test_deepseek_synthesizer_sends_structured_output_request() -> None:
     assert "supporting_quote" not in json.dumps(StructuredReportSchema.model_json_schema())
 
 
+def test_generation_contract_omits_backend_owned_evidence_and_metadata() -> None:
+    payload = valid_report_payload()
+    payload = {key: payload[key] for key in ("sections", "warnings")}
+    client = FakeClient(response=payload)
+    report = GeminiReportSynthesizer(
+        api_key="test", model="deepseek-test", client=client,
+    ).synthesize(synthesis_request())
+    properties = client.calls[0]["schema"].model_json_schema()["properties"]
+    assert not {"sources", "evidence", "metadata", "company"} & properties.keys()
+    assert report.evidence[0].id == "evidence_1"
+    assert report.sources[0].id == "source_1"
+    mapping = build_compact_report_payload(synthesis_request())["allowed_evidence_ids_by_section"]
+    assert mapping["business"] == ["evidence_1"]
+    assert mapping["argentina_presence"] == []
+    definitions = client.calls[0]["schema"].model_json_schema()["$defs"]
+    allowed = definitions["Claim_business"]["properties"]["evidence_ids"]["items"]
+    assert allowed.get("const") == "evidence_1"
+    assert definitions["Claim_argentina_presence"]["properties"]["evidence_ids"]["items"]["type"] == "null"
+
+
 def test_gemini_synthesizer_accepts_normalized_supporting_quote() -> None:
     payload = valid_report_payload()
     payload["sections"][0]["claims"][0]["supporting_quote"] = (
@@ -94,31 +114,77 @@ def test_gemini_synthesizer_accepts_normalized_supporting_quote() -> None:
     assert report.sections[0].missing_evidence is False
 
 
+def test_quote_id_resolves_original_text_without_mutating_model_response() -> None:
+    payload = valid_report_payload()
+    claim = payload["sections"][0]["claims"][0]
+    claim.pop("supporting_quote")
+    claim["supporting_quote_id"] = "evidence_1"
+    payload["evidence"][0]["raw_text_excerpt"] = "Alterado por el modelo."
+    client = FakeClient(response=payload)
+    report = GeminiReportSynthesizer(
+        api_key="test-key", model="deepseek-test", client=client,
+    ).synthesize(synthesis_request())
+    assert not report.sections[0].missing_evidence
+    assert report.evidence[0].raw_text_excerpt == "Acme fabrica productos industriales."
+    assert "supporting_quote" not in report.model_dump_json()
+    assert "supporting_quote" not in claim
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("failure", ["unknown", "uncited", "topic", "numbers"])
+def test_quote_id_failure_repairs_with_authorized_context(failure: str) -> None:
+    payload = valid_report_payload()
+    claim = payload["sections"][0]["claims"][0]
+    claim["supporting_quote_id"] = "evidence_1"
+    if failure == "unknown":
+        claim["supporting_quote_id"] = "invented"
+    elif failure == "uncited":
+        claim["evidence_ids"] = []
+    elif failure == "topic":
+        payload["sections"][0]["type"] = "argentina_presence"
+    else:
+        claim["text"] = "Acme fabrica 999 productos."
+    repaired = valid_report_payload()
+    repaired["sections"][0]["claims"][0].pop("supporting_quote")
+    repaired["sections"][0]["claims"][0]["supporting_quote_id"] = "evidence_1"
+    client = FakeClient(responses=[payload, repaired])
+    report = GeminiReportSynthesizer(
+        api_key="test-key", model="deepseek-test", client=client,
+    ).synthesize(synthesis_request())
+    assert len(client.calls) == 2
+    repair_prompt = client.calls[1]["contents"]
+    assert "Acme fabrica productos industriales." in repair_prompt
+    assert "allowed_quote_ids" in repair_prompt
+    assert "claim_1" in repair_prompt
+    assert not report.sections[0].missing_evidence
+
+
 @pytest.mark.parametrize(
     "supporting_quote",
     [None, "Acme presta servicios financieros.", "x" * 451],
 )
-def test_invalid_supporting_quote_downgrades_without_repair(supporting_quote) -> None:
+def test_invalid_required_supporting_quote_uses_existing_repair(supporting_quote) -> None:
     payload = valid_report_payload()
     claim = payload["sections"][0]["claims"][0]
     if supporting_quote is None:
         claim.pop("supporting_quote")
     else:
         claim["supporting_quote"] = supporting_quote
-    client = FakeClient(response=SimpleNamespace(text=json.dumps(payload)))
+    client = FakeClient(
+        responses=[
+            SimpleNamespace(text=json.dumps(payload)),
+            SimpleNamespace(text=json.dumps(valid_report_payload())),
+        ]
+    )
 
     report = GeminiReportSynthesizer(
         api_key="test-key", model="gemini-test-model", client=client
     ).synthesize(synthesis_request())
 
-    assert len(client.models.calls) == 1
-    assert report.sections[0].confidence == ConfidenceLevel.low
-    assert report.sections[0].claims[0].confidence == ConfidenceLevel.low
-    assert report.sections[0].missing_evidence is True
-    assert any(
-        warning.type == "supporting_quote_validation_failed"
-        for warning in report.warnings
-    )
+    assert len(client.models.calls) == 2
+    assert report.sections[0].confidence == ConfidenceLevel.medium
+    assert report.sections[0].missing_evidence is False
+    assert "supporting_quote" in client.models.calls[1]["contents"]
 
 
 def test_quote_validation_uses_original_evidence_and_checks_topic() -> None:
@@ -150,6 +216,7 @@ def test_quote_found_only_in_uncited_evidence_is_rejected() -> None:
         )
     )
     payload = valid_report_payload()
+    payload["sections"][0]["type"] = "employees"
     payload["sections"][0]["claims"][0]["supporting_quote"] = uncited_quote
 
     report = GeminiReportSynthesizer(
@@ -166,6 +233,7 @@ def test_invalid_quote_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
     payload = valid_report_payload()
     private_quote = "Texto privado que no pertenece a la evidencia."
     payload["sections"][0]["claims"][0]["supporting_quote"] = private_quote
+    payload["sections"][0]["type"] = "culture"
 
     with caplog.at_level(logging.WARNING):
         GeminiReportSynthesizer(
@@ -180,6 +248,7 @@ def test_invalid_quote_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
 
 def test_quote_must_contain_claim_numbers() -> None:
     payload = valid_report_payload()
+    payload["sections"][0]["type"] = "salary_benefits"
     payload["sections"][0]["claims"][0]["text"] = (
         "Acme fabrica 20 productos industriales."
     )
@@ -192,6 +261,26 @@ def test_quote_must_contain_claim_numbers() -> None:
 
     assert report.sections[0].claims[0].confidence == ConfidenceLevel.low
     assert report.sections[0].missing_evidence is True
+
+
+def test_required_quote_failure_after_repair_remains_an_error() -> None:
+    payload = valid_report_payload()
+    payload["sections"][0]["claims"][0]["supporting_quote"] = "Texto inventado."
+    client = FakeClient(
+        responses=[
+            SimpleNamespace(text=json.dumps(payload)),
+            SimpleNamespace(text=json.dumps(payload)),
+        ]
+    )
+
+    with pytest.raises(SynthesisError, match="after repair"):
+        GeminiReportSynthesizer(
+            api_key="test-key",
+            model="gemini-test-model",
+            client=client,
+        ).synthesize(synthesis_request())
+
+    assert len(client.models.calls) == 2
 
 
 def test_recommendation_claim_does_not_require_supporting_quote() -> None:

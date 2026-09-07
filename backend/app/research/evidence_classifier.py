@@ -7,7 +7,26 @@ from backend.app.research.types import ClassifiedEvidence, ExtractedContent, Sco
 
 
 TOPIC_KEYWORDS: dict[EvidenceTopic, tuple[str, ...]] = {
-    EvidenceTopic.business: ("empresa", "plataforma", "servicio", "producto", "negocio"),
+    EvidenceTopic.business: (
+        "empresa",
+        "plataforma",
+        "plataformas",
+        "servicio",
+        "servicios",
+        "producto",
+        "productos",
+        "negocio",
+        "solucion",
+        "solución",
+        "soluciones",
+        "ingenieria",
+        "ingeniería",
+        "consultoria",
+        "consultoría",
+        "transformacion digital",
+        "transformación digital",
+        "inteligencia artificial",
+    ),
     EvidenceTopic.argentina_presence: (
         "argentina",
         "buenos aires",
@@ -88,7 +107,17 @@ TOPIC_KEYWORDS: dict[EvidenceTopic, tuple[str, ...]] = {
         "dificultad",
     ),
     EvidenceTopic.interview_questions: ("preguntas", "questions", "technical interview"),
-    EvidenceTopic.open_roles: ("empleo", "trabajo", "vacante", "jobs", "careers", "busquedas"),
+    EvidenceTopic.open_roles: (
+        "empleo",
+        "trabajo",
+        "vacante",
+        "oferta",
+        "pasantia",
+        "pasantía",
+        "jobs",
+        "careers",
+        "busquedas",
+    ),
 }
 
 SALARY_VALUE_RE = re.compile(

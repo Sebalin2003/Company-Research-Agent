@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, Query, Response, UploadFile, status
@@ -88,6 +89,25 @@ from backend.app.services.research_service import run_mock_generation_task
 
 
 router = APIRouter(prefix="/api")
+EXPLICIT_REPORT_RE = re.compile(r"\b(?:informe|reporte|report|an[aá]lisis\s+completo)\b", re.IGNORECASE)
+AFFIRMATIVE_CLARIFICATION_RE = re.compile(
+    r"^(?:s[ií]|si,? claro|confirmo|de acuerdo|adelante|correcto)[!. ]*$",
+    re.IGNORECASE,
+)
+
+
+def clarification_option_company(label: str) -> str | None:
+    match = re.search(
+        r"\b(?:sobre|investigar(?:\s+a)?|investigá(?:\s+a)?|investiga(?:\s+a)?)\s+(.+?)"
+        r"(?=\s+(?:en|como|del|de la|para)\b|[.!?,;:]?$)",
+        label.strip(),
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    company = re.sub(r"\s+", " ", match.group(1)).strip(" .,!?:;")
+    company = re.sub(r"\s+Argentina$", "", company, flags=re.IGNORECASE)
+    return company or None
 
 
 @router.post(
@@ -254,16 +274,35 @@ def create_conversation_message(
             active_context["active_job_description_id"] = attached_job_ids[-1]
         repo.update_active_context(conversation, active_context)
     settings = get_settings()
+    is_full_report = bool(EXPLICIT_REPORT_RE.search(request.content))
     task = repo.create_task(
         conversation,
         message,
         budget={
-            "model_turns": settings.agent_max_model_turns,
-            "searches": settings.agent_max_searches,
-            "inspections": settings.agent_max_inspections,
-            "elapsed_seconds": settings.agent_max_elapsed_seconds,
-            "extension_used": False,
+            "profile": "full_report" if is_full_report else "standard",
+            "model_turns": (
+                settings.agent_report_max_model_turns
+                if is_full_report
+                else settings.agent_max_model_turns
+            ),
+            "searches": (
+                settings.agent_report_max_searches if is_full_report else settings.agent_max_searches
+            ),
+            "inspections": (
+                settings.agent_report_max_inspections
+                if is_full_report
+                else settings.agent_max_inspections
+            ),
+            "elapsed_seconds": (
+                settings.agent_report_max_elapsed_seconds
+                if is_full_report
+                else settings.agent_max_elapsed_seconds
+            ),
         },
+    )
+    task.working_state_json = json.dumps(
+        {"request_intent": "full_report" if is_full_report else "standard"},
+        ensure_ascii=False,
     )
     task.usage_json = json.dumps(
         {"acceptance_ms": int((time.monotonic() - request_started) * 1000)},
@@ -323,7 +362,7 @@ async def stream_conversation_events(
                 if (
                     active_task
                     and active_task.status
-                    in {"needs_clarification", "awaiting_approval", "awaiting_review"}
+                    in {"needs_clarification", "awaiting_review"}
                     and not events
                 ):
                     break
@@ -401,7 +440,6 @@ def resume_conversation_task(
         )
     expected_status = {
         "clarification": "needs_clarification",
-        "approval": "awaiting_approval",
         "review": "awaiting_review",
     }[request.response_type]
     if task.status != expected_status:
@@ -424,6 +462,75 @@ def resume_conversation_task(
             "content": request.content,
             "selected_option_ids": request.selected_option_ids,
         }
+        pending = working_state.get("pending_clarification") or {}
+        pending_question = str(pending.get("question") or "")
+        original_goal = str(working_state.get("goal") or "").strip()
+        selected_option_ids = set(request.selected_option_ids)
+        selected_option_labels = [
+            str(option.get("label") or "")
+            for option in pending.get("options", [])
+            if str(option.get("id") or "") in selected_option_ids
+        ]
+        report_option_selected = any(
+            EXPLICIT_REPORT_RE.search(label) for label in selected_option_labels
+        )
+        selected_company = next(
+            (
+                clarification_option_company(label)
+                for label in selected_option_labels
+                if clarification_option_company(label)
+            ),
+            None,
+        )
+        research_option_selected = bool(
+            selected_company
+            and any(
+                re.search(r"\b(?:investig|vacante|perfil|sueld|salari|cultur|entrevist)", label, re.IGNORECASE)
+                for label in selected_option_labels
+            )
+        )
+        report_confirmation = (
+            AFFIRMATIVE_CLARIFICATION_RE.fullmatch(response_text.strip())
+            or report_option_selected
+        )
+        if (
+            (report_confirmation or research_option_selected)
+            and (EXPLICIT_REPORT_RE.search(pending_question) or research_option_selected)
+            and original_goal
+            and len(re.findall(r"\w+", original_goal, re.UNICODE)) <= 3
+        ):
+            settings = get_settings()
+            company_name = str(selected_company or working_state.get("company_name") or original_goal).strip()
+            full_report_selected = bool(
+                report_confirmation and EXPLICIT_REPORT_RE.search(pending_question)
+            )
+            working_state.update(
+                {
+                    "goal": (
+                        f"Generá un informe completo sobre {company_name} como empleador en Argentina."
+                        if full_report_selected
+                        else f"Investigá a {company_name} como empleador en Argentina."
+                    ),
+                    "company_name": company_name,
+                    "request_intent": "full_report" if full_report_selected else "standard",
+                    "requires_grounding": True,
+                    "pending_clarification": None,
+                }
+            )
+            if full_report_selected:
+                task.budget_json = json.dumps(
+                    {
+                        "profile": "full_report",
+                        "model_turns": settings.agent_report_max_model_turns,
+                        "searches": settings.agent_report_max_searches,
+                        "inspections": settings.agent_report_max_inspections,
+                        "elapsed_seconds": settings.agent_report_max_elapsed_seconds,
+                    },
+                    ensure_ascii=False,
+                )
+            active_context = safe_json_dict(conversation.active_context_json)
+            active_context["active_company_name"] = company_name
+            repo.update_active_context(conversation, active_context)
     elif request.response_type == "review":
         artifact = db.get(models.CVRecommendationArtifact, request.artifact_id)
         if not artifact or artifact.task_run_id != task.id:
@@ -447,27 +554,6 @@ def resume_conversation_task(
             "saved_version_id": saved.id if saved else None,
         }
         working_state["force_finalize"] = True
-    else:
-        budget = safe_json_dict(task.budget_json)
-        if request.decision == "approved":
-            if budget.get("extension_used"):
-                raise api_error(
-                    status.HTTP_409_CONFLICT,
-                    "budget_extension_already_used",
-                    "La ampliación de presupuesto ya fue utilizada.",
-                )
-            budget.update(
-                {
-                    "model_turns": int(budget.get("model_turns", 0)) + 6,
-                    "searches": int(budget.get("searches", 0)) + 3,
-                    "inspections": int(budget.get("inspections", 0)) + 5,
-                    "elapsed_seconds": int(budget.get("elapsed_seconds", 0)) + 120,
-                    "extension_used": True,
-                }
-            )
-            task.budget_json = json.dumps(budget, ensure_ascii=False)
-        else:
-            working_state["force_finalize"] = True
     task.working_state_json = json.dumps(working_state, ensure_ascii=False)
     task.pause_reason_json = None
     repo.update_task(task, "pending")
@@ -1213,6 +1299,21 @@ def conversation_detail(
 ) -> ConversationDetailResponse:
     messages = repo.list_messages(conversation.id)
     artifacts = repo.list_artifacts(conversation.id)
+    generated_message_ids = {
+        artifact.id: (
+            artifact.message_id
+            or next(
+                (
+                    message.id
+                    for message in reversed(messages)
+                    if message.role == "user" and message.created_at <= artifact.created_at
+                ),
+                None,
+            )
+        )
+        for artifact in artifacts
+        if artifact.relationship_type == "generated"
+    }
     latest_task = repo.latest_task(conversation.id)
     latest_event = repo.latest_event(conversation.id)
     return ConversationDetailResponse(
@@ -1237,7 +1338,7 @@ def conversation_detail(
         artifacts=[
             ConversationArtifactResponse(
                 artifact_link_id=artifact.id,
-                message_id=artifact.message_id,
+                message_id=generated_message_ids.get(artifact.id, artifact.message_id),
                 type=artifact.artifact_type,
                 artifact_id=artifact.artifact_id,
                 relationship_type=artifact.relationship_type,

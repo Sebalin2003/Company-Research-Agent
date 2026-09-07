@@ -20,11 +20,16 @@ SOURCE_TYPE_HINTS: tuple[tuple[str, SourceType], ...] = (
     ("bumeran.", SourceType.job_board),
     ("zonajobs.", SourceType.job_board),
     ("getonbrd.", SourceType.job_board),
+    ("portalempleo.gob.ar", SourceType.job_board),
+    ("buscojobs.com", SourceType.job_board),
+    ("jooble.org", SourceType.job_board),
+    ("talent.com", SourceType.job_board),
     ("greenhouse.io", SourceType.career_page),
     ("lever.co", SourceType.career_page),
     ("workable.com", SourceType.career_page),
     ("wikipedia.org", SourceType.company_database),
 )
+GEOGRAPHIC_SUFFIXES = {"argentina", "latam", "latinoamerica"}
 
 
 def score_search_result(company_name: str, result: SearchResult) -> ScoredSource:
@@ -46,10 +51,9 @@ def score_search_result(company_name: str, result: SearchResult) -> ScoredSource
 def classify_source_type(company_name: str, url: str, topic: EvidenceTopic) -> SourceType:
     normalized_url = url.lower()
     host = extract_domain(url)
-    normalized_company = normalize_company_name(company_name).replace(" ", "")
     normalized_host = host.replace(".", "").replace("-", "")
 
-    if normalized_company and normalized_company in normalized_host:
+    if any(token in normalized_host for token in company_domain_tokens(company_name)):
         if topic == EvidenceTopic.open_roles or "career" in normalized_url or "jobs" in normalized_url:
             return SourceType.career_page
         return SourceType.official
@@ -59,6 +63,16 @@ def classify_source_type(company_name: str, url: str, topic: EvidenceTopic) -> S
             return source_type
 
     return SourceType.secondary if host else SourceType.unknown
+
+
+def company_domain_tokens(company_name: str) -> tuple[str, ...]:
+    words = normalize_company_name(company_name).split()
+    tokens = ["".join(words)] if words else []
+    while words and words[-1] in GEOGRAPHIC_SUFFIXES:
+        words.pop()
+    if words:
+        tokens.append("".join(words))
+    return tuple(dict.fromkeys(token for token in tokens if len(token) >= 3))
 
 
 def reliability_score(source_type: SourceType, url: str, rank: int) -> int:

@@ -14,7 +14,6 @@ ACTIVE_TASK_STATUSES = {
     "pending",
     "running",
     "needs_clarification",
-    "awaiting_approval",
     "awaiting_review",
 }
 TERMINAL_TASK_STATUSES = {"completed", "cancelled", "failed"}
@@ -329,17 +328,29 @@ class ConversationRepository:
     def fail_interrupted_tasks(self, message: str) -> int:
         tasks = list(
             self.db.scalars(
-                select(models.TaskRun).where(models.TaskRun.status.in_({"pending", "running"}))
+                select(models.TaskRun).where(
+                    models.TaskRun.status.in_({"pending", "running", "awaiting_approval"})
+                )
             )
         )
         for task in tasks:
-            task.pause_reason_json = json.dumps(
-                {"type": "server_restart", "message": message}, ensure_ascii=False
+            recovery_message = (
+                "La ampliación de presupuesto ya no está disponible. Volvé a enviar el mensaje "
+                "para recibir una respuesta con los límites actuales."
+                if task.status == "awaiting_approval"
+                else message
             )
-            self.update_task(task, "failed", "server_restarted")
+            task.pause_reason_json = json.dumps(
+                {"type": "server_restart", "message": recovery_message}, ensure_ascii=False
+            )
+            self.update_task(
+                task,
+                "failed",
+                "budget_extension_removed" if task.status == "awaiting_approval" else "server_restarted",
+            )
             self.add_event(
                 task,
                 "task.failed",
-                {"task_run_id": task.id, "status": "failed", "message": message},
+                {"task_run_id": task.id, "status": "failed", "message": recovery_message},
             )
         return len(tasks)

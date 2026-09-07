@@ -239,6 +239,10 @@ svg {
   width: 100%;
 }
 
+.conversation-search input:focus-visible {
+  box-shadow: none;
+}
+
 .conversation-search input::placeholder,
 .chat-composer textarea::placeholder {
   color: var(--muted);

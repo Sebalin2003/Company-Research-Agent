@@ -10,6 +10,7 @@ from backend.app.domain.reports import (
     ConfidenceLevel,
     EvidenceTopic,
     SectionType,
+    SourceType,
     StructuredReportSchema,
     WarningSchema,
     WarningSeverity,
@@ -45,6 +46,18 @@ SALARY_RANGE_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_SUPPORTING_QUOTE_CHARACTERS = 450
+COMPLETION_CORE_SECTIONS = (
+    SectionType.executive_summary,
+    SectionType.business,
+    SectionType.argentina_presence,
+    SectionType.open_roles,
+)
+CORPORATE_SOURCE_TYPES = {SourceType.official, SourceType.career_page}
+EMPLOYMENT_SOURCE_TYPES = {
+    SourceType.career_page,
+    SourceType.linkedin,
+    SourceType.job_board,
+}
 QUOTE_TRANSLATION = str.maketrans(
     {
         "\u2018": "'",
@@ -191,6 +204,7 @@ def normalize_quote_text(value: str) -> str:
 
 def validate_report_grounding(report: StructuredReportSchema) -> StructuredReportSchema:
     evidence_by_id = {item.id: item for item in report.evidence}
+    sources_by_id = {source.id: source for source in report.sources}
     warnings = list(report.warnings)
     sections = []
 
@@ -218,11 +232,20 @@ def validate_report_grounding(report: StructuredReportSchema) -> StructuredRepor
                 and (
                     not valid_ids
                     or has_unsupported_numbers(claim.text, claim_evidence)
+                    or has_conflicting_open_role_numbers(
+                        claim.text, claim_evidence, sources_by_id
+                    )
                 )
             )
             if claim_is_weak:
                 section_is_weak = True
-                reasons.append("afirmaciones sin respaldo suficiente")
+                reasons.append(
+                    "valores numericos inconsistentes"
+                    if has_conflicting_open_role_numbers(
+                        claim.text, claim_evidence, sources_by_id
+                    )
+                    else "afirmaciones sin respaldo suficiente"
+                )
             claims.append(
                 claim.model_copy(
                     update={
@@ -291,6 +314,71 @@ def validate_report_grounding(report: StructuredReportSchema) -> StructuredRepor
     )
 
 
+def report_completion_issues(
+    report: StructuredReportSchema,
+    *,
+    allow_unverified_open_roles: bool = False,
+) -> list[str]:
+    """Return user-safe reasons why a full employer report must stay limited."""
+    sources = report.sources
+    domains = {source.domain.lower() for source in sources if source.domain}
+    issues: list[str] = []
+    if not any(source.source_type in CORPORATE_SOURCE_TYPES for source in sources):
+        issues.append("No se validó una fuente oficial o de carreras de la empresa.")
+    if (
+        not allow_unverified_open_roles
+        and not any(source.source_type in EMPLOYMENT_SOURCE_TYPES for source in sources)
+    ):
+        issues.append("No se validó una fuente laboral actual para las vacantes.")
+    if len(domains) < 2:
+        issues.append("No se obtuvo diversidad suficiente de fuentes.")
+
+    sections = {section.type: section for section in report.sections}
+    required_sections = (
+        section_type
+        for section_type in COMPLETION_CORE_SECTIONS
+        if not (
+            allow_unverified_open_roles
+            and section_type == SectionType.open_roles
+        )
+    )
+    for section_type in required_sections:
+        section = sections.get(section_type)
+        has_grounded_claim = bool(
+            section
+            and not section.missing_evidence
+            and any(
+                claim.type in {ClaimType.fact, ClaimType.inference}
+                and claim.confidence != ConfidenceLevel.low
+                and claim.evidence_ids
+                for claim in section.claims
+            )
+        )
+        if not has_grounded_claim:
+            issues.append(f"Falta evidencia verificable para {section_label(section_type)}.")
+
+    for warning in report.warnings:
+        if (
+            warning.type == "supporting_quote_validation_failed"
+            and warning.related_section in COMPLETION_CORE_SECTIONS
+            and not (
+                allow_unverified_open_roles
+                and warning.related_section == SectionType.open_roles
+            )
+        ):
+            issues.append(f"No se pudo validar la cita de {section_label(warning.related_section)}.")
+    return list(dict.fromkeys(issues))
+
+
+def section_label(section_type: SectionType) -> str:
+    return {
+        SectionType.executive_summary: "resumen ejecutivo",
+        SectionType.business: "negocio principal",
+        SectionType.argentina_presence: "presencia en Argentina",
+        SectionType.open_roles: "vacantes actuales en Argentina",
+    }.get(section_type, "una sección esencial")
+
+
 def has_unsupported_numbers(text: str, evidence) -> bool:
     numbers = canonical_numbers(text)
     if not numbers:
@@ -299,6 +387,22 @@ def has_unsupported_numbers(text: str, evidence) -> bool:
         f"{item.claim} {item.raw_text_excerpt or ''}" for item in evidence
     )
     return not numbers.issubset(canonical_numbers(evidence_text))
+
+
+def has_conflicting_open_role_numbers(text: str, evidence, sources_by_id) -> bool:
+    if not canonical_numbers(text):
+        return False
+    for item in evidence:
+        if item.topic != EvidenceTopic.open_roles:
+            continue
+        source = sources_by_id.get(item.source_id)
+        if not source:
+            continue
+        excerpt_numbers = canonical_numbers(item.raw_text_excerpt or "")
+        metadata_numbers = canonical_numbers(f"{source.title} {source.snippet or ''}")
+        if excerpt_numbers and metadata_numbers and excerpt_numbers.isdisjoint(metadata_numbers):
+            return True
+    return False
 
 
 def canonical_numbers(text: str) -> set[str]:

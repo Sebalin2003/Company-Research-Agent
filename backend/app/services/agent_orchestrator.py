@@ -19,43 +19,78 @@ from backend.app.core.time import utc_now
 from backend.app.db import models
 from backend.app.db.conversation_repository import ConversationRepository
 from backend.app.db.repositories import CompanyRepository, ReportRepository, safe_json_dict
+from backend.app.domain.companies import normalize_company_name
 from backend.app.domain.cv import extract_candidate_signals, select_cv_evidence_lines
 from backend.app.domain.jobs import extract_job_signals, job_signal_payload, select_job_evidence_lines
-from backend.app.domain.reports import ConfidenceLevel, EvidenceTopic, ReportStatus, SourceType
+from backend.app.domain.reports import (
+    ConfidenceLevel,
+    EvidenceTopic,
+    ReportStatus,
+    SectionSchema,
+    SectionType,
+    SourceType,
+    WarningSchema,
+    WarningSeverity,
+)
 from backend.app.llm.cv_tailoring import DeepSeekCVTailoringService
 from backend.app.llm.deepseek import DeepSeekAPIError, DeepSeekClient, DeepSeekReportSynthesizer
 from backend.app.llm.synthesizer import SynthesisError, SynthesisRequest
 from backend.app.research.content_extractor import HttpContentExtractor
 from backend.app.research.evidence_classifier import classify_evidence
-from backend.app.research.scoring import score_search_result, stable_source_id
+from backend.app.research.scoring import company_domain_tokens, score_search_result, stable_source_id
 from backend.app.research.search_provider import FakeSearchProvider, TavilySearchProvider
 from backend.app.research.types import ClassifiedEvidence, ExtractedContent, ScoredSource, SearchResult
 from backend.app.services.rag_indexing import schedule_report_embedding_task
 from backend.app.services.rag import GoogleEmbeddingService, rank_chunks
 from backend.app.services.cv_library import CVLibraryService
+from backend.app.services.report_quality import report_completion_issues
 
 
 SYSTEM_PROMPT = """Sos Radar Laboral, un asistente laboral conversacional en español.
 Elegí una sola función por turno. Usá respond para terminar y request_clarification si falta un dato esencial.
 Un mensaje aislado o ambiguo como "google" requiere aclaración. Una consulta meteorológica sin ubicación
-también requiere aclaración. Para datos actuales, priorizá fuentes oficiales y páginas de empleo oficiales.
+también requiere aclaración. Para datos actuales, combiná fuentes oficiales con fuentes laborales relevantes.
 Después de recibir una aclaración, avanzá con la mejor interpretación disponible sin volver a preguntar.
-Si una vacante o pasantía actual no tiene evidencia de una fuente oficial o career page, indicá claramente
-que no pudiste confirmarla oficialmente y agregá una advertencia.
-La orientación general puede ser guidance sin citas. Datos sobre empresas, mercado, salarios, vacantes,
-beneficios, entrevistas o informes deben ser grounded y citar IDs de evidencia disponibles.
+Para presencia, cantidad de empleados y puestos, considerá LinkedIn como fuente laboral principal. Para
+sueldos, cultura y entrevistas, considerá Glassdoor. Para vacantes en Argentina, considerá LinkedIn Jobs,
+Computrabajo, Bumeran, ZonaJobs, Indeed, Get on Board y Portal Empleo, además de career pages oficiales.
+Si una vacante o pasantía actual no tiene evidencia de una career page o de un portal laboral reconocido,
+indicá claramente que no pudo confirmarse en una fuente laboral confiable y agregá una advertencia.
+La orientación general sobre entrevistas puede ser guidance sin citas. Datos factuales sobre empresas,
+mercado, salarios, vacantes, beneficios, entrevistas en una empresa concreta o informes deben ser grounded
+y citar IDs de evidencia disponibles.
 No uses conocimiento previo del modelo como evidencia. No inventes fuentes ni datos. search_web busca,
 inspect_page inspecciona solo resultados obtenidos, review_evidence
 revisa cobertura, retrieve_reports recupera informes, compare_reports crea una comparación y finish_research
-crea un informe durable. Para cerrar una investigación con una respuesta normal, usá respond directamente.
+crea un informe durable. Si la evidencia disponible ya alcanza para el pedido, finalizá sin seguir buscando.
+Si no podés verificar información esencial, usá respond para explicarlo con claridad, sin inventar datos.
+respond es una acción terminal: nunca digas que vas a buscar, investigar o continuar después de responder.
+Para un informe explícito, cuando haya evidencia validada usá finish_research, no respond.
+Para completar un informe, necesitás evidencia verificable del resumen, negocio y presencia en Argentina.
+Para vacantes, buscá una publicación concreta con empresa, rol y ubicación argentina. Si el servidor indica
+searched_not_verified después de intentar las cinco fuentes laborales, creá el informe igualmente y dejá
+la sección de vacantes sin evidencia, con la advertencia indicada; nunca afirmes que no existen puestos.
+Para investigar un informe, priorizá una fuente corporativa, una fuente laboral actual y después
+plataformas de reseñas solo para sueldos, cultura o entrevistas. No presentes datos de reseñas como
+hechos oficiales de la empresa. Para conteos dinámicos de vacantes, indicá la plataforma y que se
+consultaron al momento de la investigación.
+En búsquedas sobre una empresa, enviá siempre company_name a search_web. Para vacantes, seguí las
+recommended_queries del servidor: careers primero, luego LinkedIn Jobs y después Computrabajo, Bumeran
+y ZonaJobs, una plataforma por consulta. Evitá combinar varias plataformas
+en una misma consulta y no inspecciones resultados dirigidos claramente a otro país.
 No describas razonamiento privado. Las herramientas de CV solo pueden usarse cuando el usuario pide
 usar o adaptar su CV, o cuando adjunta un CV o una descripción de puesto. En ese caso están disponibles
-get_cv_profile, analyze_job_description y prepare_cv_recommendations."""
+get_cv_profile, analyze_job_description y prepare_cv_recommendations.
+Escribí respuestas limpias en párrafos breves. No uses Markdown: evitá encabezados con #, negritas,
+comillas de bloque, separadores, bloques de código, viñetas decorativas y tablas con barras verticales."""
 
-GENERAL_GUIDANCE_RE = re.compile(
-    r"\b(consejos?|recomendaciones? generales?|c[oó]mo mejorar|c[oó]mo preparar|qu[eé] es|"
-    r"explicame|expl[ií]came|curr[ií]culum|\bcv\b|entrevista en general|"
-    r"organizar.*b[uú]squeda laboral|ayudame.*b[uú]squeda laboral)\b",
+GROUNDING_REQUIRED_RE = re.compile(
+    r"\b(investig(?:á|a|ar|ue)|compar(?:á|a|ar|e)|busc(?:á|a|ar)\s+fuentes?|"
+    r"fuentes?|citas?|informes?|report(?:es)?|mercado laboral|salarios?|sueldos?|vacantes?|"
+    r"pasant[ií]as?|internships?|beneficios laborales|career page|empleo vigente|"
+    r"puesto abierto|oportunidad laboral|trabajar en|como empleador|como empresa|"
+    r"cantidad de empleados|facturaci[oó]n|(?:a\s+)?qu[eé]\s+se\s+dedica)\b|"
+    r"\bentrevista\b.{0,80}\ben\s+(?!general\b)",
     re.IGNORECASE,
 )
 
@@ -63,6 +98,77 @@ SMALL_TALK_RE = re.compile(r"^(hola|buenas|gracias|ok|okay|sí|si|no|chau)[!. ]*
 WEATHER_RE = re.compile(r"\b(clima|tiempo|temperatura|pron[oó]stico)\b", re.IGNORECASE)
 CURRENT_OPPORTUNITY_RE = re.compile(
     r"\b(pasant[ií]as?|internships?|vacantes?|puesto abierto|empleo vigente|oportunidad laboral)\b",
+    re.IGNORECASE,
+)
+FUTURE_RESEARCH_RE = re.compile(
+    r"\b(?:voy|vamos)\s+a\s+(?:buscar|investigar|consultar|revisar)|"
+    r"\b(?:buscar[eé]|investigar[eé]|consultar[eé]|continuar[eé])\b",
+    re.IGNORECASE,
+)
+FULL_REPORT_CORE_TOPICS = (
+    EvidenceTopic.business.value,
+    EvidenceTopic.argentina_presence.value,
+    EvidenceTopic.open_roles.value,
+)
+CORPORATE_SOURCE_TYPES = {SourceType.official.value, SourceType.career_page.value}
+EMPLOYMENT_SOURCE_TYPES = {
+    SourceType.career_page.value,
+    SourceType.linkedin.value,
+    SourceType.job_board.value,
+}
+ARGENTINA_JOB_BOARD_DOMAINS = (
+    "ar.computrabajo.com",
+    "computrabajo.com.ar",
+    "bumeran.com.ar",
+    "zonajobs.com.ar",
+    "ar.indeed.com",
+    "getonbrd.com",
+    "portalempleo.gob.ar",
+    "buscojobs.com",
+    "talent.com",
+    "jooble.org",
+)
+EMPLOYMENT_SEARCH_SEQUENCE = (
+    "careers",
+    "linkedin",
+    "computrabajo",
+    "bumeran",
+    "zonajobs",
+)
+EMPLOYMENT_SEARCH_QUERIES = {
+    "careers": "{company} careers jobs Argentina",
+    "linkedin": 'site:linkedin.com/jobs/view "{company}" Argentina',
+    "computrabajo": 'site:ar.computrabajo.com "{company}" empleo Argentina',
+    "bumeran": 'site:bumeran.com.ar "{company}" empleo Argentina',
+    "zonajobs": 'site:zonajobs.com.ar "{company}" empleo Argentina',
+}
+ARGENTINA_LOCATION_RE = re.compile(
+    r"\b(argentina|buenos aires|caba|c[oó]rdoba|rosario|mendoza)\b",
+    re.IGNORECASE,
+)
+JOB_DETAIL_URL_RE = re.compile(
+    r"/(?:jobs?|empleos?|vacantes?|ofertas?(?:-de-trabajo)?)/(?:view/)?[^/?#]+",
+    re.IGNORECASE,
+)
+GENERIC_JOB_PAGE_RE = re.compile(
+    r"^(?:our\s+)?careers?$|^jobs?$|^.+:\s*jobs$|^join\s+our\s+team$|"
+    r"^trabajar\s+en\s+.+|^empleos(?:\s+en\s+.+)?$",
+    re.IGNORECASE,
+)
+OPEN_ROLES_LIMITATION = (
+    "No se encontraron vacantes actuales verificables en Argentina en las fuentes consultadas; "
+    "esto no significa que no existan."
+)
+LOCATION_SENSITIVE_TOPICS = {
+    EvidenceTopic.salary.value,
+    EvidenceTopic.benefits.value,
+    EvidenceTopic.culture.value,
+    EvidenceTopic.interview_process.value,
+    EvidenceTopic.interview_questions.value,
+    EvidenceTopic.open_roles.value,
+}
+FOREIGN_LOCATION_RE = re.compile(
+    r"\b(bogot[aá]|colombia|m[eé]xico|chile|per[uú]|brasil|espa[nñ]a)\b",
     re.IGNORECASE,
 )
 
@@ -92,10 +198,13 @@ class AgentEvidence(BaseModel):
 
 class AgentState(BaseModel):
     goal: str
+    request_intent: Literal["standard", "full_report"] = "standard"
+    company_name: str | None = None
     requires_grounding: bool = True
     sources: list[AgentSource] = Field(default_factory=list)
     evidence: list[AgentEvidence] = Field(default_factory=list)
     searched_queries: list[str] = Field(default_factory=list)
+    employment_search_attempts: list[str] = Field(default_factory=list)
     inspected_source_ids: list[str] = Field(default_factory=list)
     retrieved_report_ids: list[str] = Field(default_factory=list)
     unresolved_topics: list[str] = Field(default_factory=list)
@@ -106,8 +215,11 @@ class AgentState(BaseModel):
     selected_job_description_id: str | None = None
     recommendation_artifact_id: str | None = None
     clarification_response: dict[str, Any] | None = None
+    pending_clarification: dict[str, Any] | None = None
     review_response: dict[str, Any] | None = None
     force_finalize: bool = False
+    force_report_finalize: bool = False
+    coverage_reminder_sent: bool = False
     response_message_id: str | None = None
 
 
@@ -223,6 +335,33 @@ class AgentOrchestrator:
                 if task.status == "cancelled":
                     return
                 self.enforce_budget(task, state, usage, run_started)
+                if (
+                    self.is_full_report_task(task)
+                    and usage["model_turns"] >= 12
+                    and not state.coverage_reminder_sent
+                    and not self.can_create_report(state)
+                ):
+                    coverage = self.full_report_coverage(state)
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Control de cobertura del servidor. Quedan pocas decisiones. "
+                                "Priorizá solamente los faltantes centrales y consultas separadas. "
+                                + json.dumps(
+                                    {
+                                        "missing": coverage["missing"],
+                                        "recommended_queries": coverage["recommended_queries"],
+                                        "recommended_inspections": coverage["recommended_inspections"],
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            ),
+                        }
+                    )
+                    state.coverage_reminder_sent = True
+                    self.save_state(task, state)
+                    self.db.commit()
                 if state.force_finalize:
                     self.repo.add_event(
                         task,
@@ -243,14 +382,46 @@ class AgentOrchestrator:
                         {"answer_type": "grounded" if state.requires_grounding else "guidance"},
                     )
                 client = self.get_client()
+                clarification_retry = self.should_retry_clarification(state)
                 clarification_only = self.requires_clarification(state)
                 tools = self.function_tools(
                     final_only=state.force_finalize,
+                    report_final_only=state.force_report_finalize,
                     clarification_only=clarification_only,
-                    allow_clarification=not bool(state.clarification_response),
+                    allow_clarification=(
+                        not bool(state.clarification_response) or clarification_retry
+                    ),
+                    allow_research=state.requires_grounding,
+                    report_needs_artifact=(
+                        self.is_full_report_task(task)
+                        and self.can_create_report(state)
+                        and not state.generated_report_id
+                    ),
                 )
+                required_report_action = (
+                    self.required_full_report_action(state)
+                    if self.is_full_report_task(task) and not repair_tool_name
+                    else None
+                )
+                if required_report_action:
+                    required_name = required_report_action["name"]
+                    tools = [
+                        item for item in tools
+                        if item["function"]["name"] == required_name
+                    ]
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": required_report_action["instruction"],
+                        }
+                    )
                 allowed_names = [item["function"]["name"] for item in tools]
                 tool_choice: str | dict[str, Any] = "required"
+                if required_report_action:
+                    tool_choice = {
+                        "type": "function",
+                        "function": {"name": required_report_action["name"]},
+                    }
                 if repair_tool_name:
                     tools = [
                         item for item in tools
@@ -289,6 +460,8 @@ class AgentOrchestrator:
                     if not repair_tool_name:
                         if allowed_names == ["request_clarification"]:
                             repair_tool_name = "request_clarification"
+                        elif len(allowed_names) == 1:
+                            repair_tool_name = allowed_names[0]
                         elif state.requires_grounding and "search_web" in allowed_names:
                             repair_tool_name = "search_web"
                         elif "respond" in allowed_names:
@@ -313,7 +486,11 @@ class AgentOrchestrator:
                         }
                     )
                     continue
-                arguments = call.arguments
+                arguments = (
+                    required_report_action["arguments"]
+                    if required_report_action
+                    else call.arguments
+                )
                 self.repo.add_event(
                     task,
                     "tool.started",
@@ -338,6 +515,8 @@ class AgentOrchestrator:
                     artifact_refs=result.artifact_refs,
                 )
                 self.db.commit()
+                if name == "finish_research" and result.payload.get("ok"):
+                    self.complete_task(task, usage)
                 messages.append(assistant_message)
                 messages.append(
                     {
@@ -346,6 +525,8 @@ class AgentOrchestrator:
                         "content": json.dumps(result.payload, ensure_ascii=False),
                     }
                 )
+                if state.force_report_finalize and name != "finish_research":
+                    raise AgentFailure("DeepSeek no pudo finalizar el informe dentro del presupuesto.")
                 if state.force_finalize and name != "respond":
                     raise AgentFailure("DeepSeek no pudo finalizar la respuesta dentro del presupuesto.")
         except (AgentPaused, AgentCompleted):
@@ -407,6 +588,22 @@ class AgentOrchestrator:
             return AgentState.model_validate(raw)
         trigger = self.db.get(models.ConversationMessage, task.trigger_message_id)
         goal = trigger.content if trigger else "Responder al usuario"
+        conversation = self.repo.get(task.conversation_id)
+        context = safe_json_dict(conversation.active_context_json) if conversation else {}
+        active_company = str(context.get("active_company_name") or "").strip()
+        focused_goal = self.focused_company_goal(goal, active_company)
+        inferred_company = (
+            self.infer_company_from_report_goal(goal) or active_company
+            if self.is_full_report_task(task)
+            else active_company if focused_goal else None
+        )
+        prior_state = (
+            self.latest_company_state(task, active_company)
+            if focused_goal and active_company
+            else None
+        )
+        if focused_goal:
+            goal = focused_goal
         has_report = any(
             item.artifact_type == "report"
             for item in self.repo.list_artifacts(task.conversation_id)
@@ -414,11 +611,81 @@ class AgentOrchestrator:
         )
         return AgentState(
             goal=goal,
-            requires_grounding=has_report or not bool(GENERAL_GUIDANCE_RE.search(goal)),
-            sources=self.conversation_sources(task.conversation_id),
-            evidence=self.conversation_evidence(task.conversation_id),
+            request_intent=(
+                "full_report"
+                if self.is_full_report_task(task) or raw.get("request_intent") == "full_report"
+                else "standard"
+            ),
+            requires_grounding=(
+                bool(focused_goal)
+                or has_report
+                or self.is_full_report_task(task)
+                or bool(GROUNDING_REQUIRED_RE.search(goal))
+            ),
+            company_name=inferred_company or None,
+            sources=prior_state.sources if prior_state else self.conversation_sources(task.conversation_id),
+            evidence=prior_state.evidence if prior_state else self.conversation_evidence(task.conversation_id),
             clarification_response=raw.get("clarification_response"),
+            pending_clarification=raw.get("pending_clarification"),
         )
+
+    @staticmethod
+    def infer_company_from_report_goal(goal: str) -> str | None:
+        match = re.search(
+            r"\b(?:sobre|de|para)\s+(.+?)(?=\s+(?:como|en|del|de la|para)\b|[.!?,;:]?$)",
+            goal.strip(),
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+        company = re.sub(r"\s+", " ", match.group(1)).strip(" .,!?:;")
+        return company or None
+
+    @staticmethod
+    def focused_company_goal(goal: str, company_name: str) -> str | None:
+        if not company_name:
+            return None
+        focus = re.sub(r"[^a-záéíóúüñ]+", " ", goal.casefold()).strip()
+        templates = {
+            "vacante": "Vacantes actuales de {company} en Argentina.",
+            "vacantes": "Vacantes actuales de {company} en Argentina.",
+            "puesto": "Vacantes actuales de {company} en Argentina.",
+            "puestos": "Vacantes actuales de {company} en Argentina.",
+            "general": "Perfil general de {company} como empleador en Argentina.",
+            "perfil": "Perfil general de {company} como empleador en Argentina.",
+            "sueldo": "Sueldos de {company} en Argentina.",
+            "sueldos": "Sueldos de {company} en Argentina.",
+            "salario": "Salarios de {company} en Argentina.",
+            "salarios": "Salarios de {company} en Argentina.",
+            "cultura": "Cultura laboral de {company} en Argentina.",
+            "entrevista": "Proceso de entrevistas de {company} en Argentina.",
+            "entrevistas": "Proceso de entrevistas de {company} en Argentina.",
+        }
+        template = templates.get(focus)
+        return template.format(company=company_name) if template else None
+
+    def latest_company_state(
+        self,
+        task: models.TaskRun,
+        company_name: str,
+    ) -> AgentState | None:
+        previous_tasks = (
+            self.db.query(models.TaskRun)
+            .filter(
+                models.TaskRun.conversation_id == task.conversation_id,
+                models.TaskRun.id != task.id,
+            )
+            .order_by(models.TaskRun.created_at.desc())
+            .limit(20)
+        )
+        for previous in previous_tasks:
+            raw = safe_json_dict(previous.working_state_json)
+            if not raw.get("goal"):
+                continue
+            candidate = AgentState.model_validate(raw)
+            if candidate.company_name and self.same_company(candidate.company_name, company_name):
+                return candidate
+        return None
 
     def conversation_sources(self, conversation_id: str) -> list[AgentSource]:
         citations = self.recent_citations(conversation_id)
@@ -463,7 +730,11 @@ class AgentOrchestrator:
 
     @staticmethod
     def requires_clarification(state: AgentState) -> bool:
-        if state.clarification_response or state.force_finalize:
+        if state.force_finalize:
+            return False
+        if AgentOrchestrator.should_retry_clarification(state):
+            return True
+        if state.clarification_response:
             return False
         goal = " ".join(state.goal.strip().split())
         if SMALL_TALK_RE.fullmatch(goal):
@@ -471,6 +742,18 @@ class AgentOrchestrator:
         if WEATHER_RE.search(goal) and not re.search(r"\b(en|para)\s+\w+", goal, re.IGNORECASE):
             return True
         return len(re.findall(r"\w+", goal, re.UNICODE)) <= 2
+
+    @staticmethod
+    def should_retry_clarification(state: AgentState) -> bool:
+        """Keep an unresolved name clarification from falling through to respond."""
+        pending = state.pending_clarification or {}
+        response = state.clarification_response or {}
+        question = str(pending.get("question") or "").casefold()
+        content = " ".join(str(response.get("content") or "").casefold().split())
+        goal = " ".join(str(state.goal or "").casefold().split())
+        if not content or not goal or content != goal:
+            return False
+        return "qué significa" in question or "que significa" in question
 
     def save_state(self, task: models.TaskRun, state: AgentState) -> None:
         task.working_state_json = state.model_dump_json()
@@ -501,62 +784,350 @@ class AgentOrchestrator:
     def enforce_budget(
         self, task: models.TaskRun, state: AgentState, usage: dict, started: float
     ) -> None:
-        if state.force_finalize:
+        if state.force_finalize or state.force_report_finalize:
             return
         budget = safe_json_dict(task.budget_json)
         elapsed = self.run_elapsed_base + int((time.monotonic() - started) * 1000)
+        if (
+            self.is_full_report_task(task)
+            and self.can_create_report(state)
+            and usage["model_turns"] >= max(0, int(budget.get("model_turns", 4)) - 1)
+        ):
+            self.force_completion(task, state)
+            return
         exhausted = (
             usage["model_turns"] >= int(budget.get("model_turns", 4))
             or elapsed >= int(budget.get("elapsed_seconds", 180)) * 1000
         )
         if not exhausted:
             return
-        if state.evidence or not state.requires_grounding:
-            state.force_finalize = True
-            self.save_state(task, state)
-            self.db.commit()
-            return
-        if budget.get("extension_used"):
-            state.force_finalize = True
-            self.save_state(task, state)
-            self.db.commit()
-            return
-        self.pause(
-            task,
-            "awaiting_approval",
-            "approval.required",
-            {
-                "type": "budget_extension",
-                "prompt": "Se alcanzó el presupuesto estándar. ¿Querés ampliar la investigación una vez?",
-                "options": [
-                    {"id": "approved", "label": "Continuar"},
-                    {"id": "rejected", "label": "Finalizar con lo disponible"},
-                ],
-            },
-        )
+        self.force_completion(task, state)
 
     def enforce_tool_budget(
         self, task: models.TaskRun, state: AgentState, usage: dict, counter: str
-    ) -> None:
+    ) -> bool:
         budget = safe_json_dict(task.budget_json)
         if int(usage.get(counter, 0)) < int(budget.get(counter, 0)):
-            return
-        if budget.get("extension_used"):
-            state.force_finalize = True
-            raise ValueError("Se agotó el presupuesto de esta herramienta; finalizá con lo disponible.")
-        self.pause(
-            task,
-            "awaiting_approval",
-            "approval.required",
-            {
-                "type": "budget_extension",
-                "prompt": "Se alcanzó el presupuesto estándar. ¿Querés ampliar la investigación una vez?",
-                "options": [
-                    {"id": "approved", "label": "Continuar"},
-                    {"id": "rejected", "label": "Finalizar con lo disponible"},
-                ],
-            },
+            return True
+        self.force_completion(task, state)
+        return False
+
+    @staticmethod
+    def is_full_report_task(task: models.TaskRun) -> bool:
+        return safe_json_dict(task.budget_json).get("profile") == "full_report"
+
+    @staticmethod
+    def full_report_coverage(state: AgentState) -> dict[str, Any]:
+        sources = {source.id: source for source in state.sources}
+        corporate_source = any(source.source_type in CORPORATE_SOURCE_TYPES for source in state.sources)
+        career_source = any(source.source_type == SourceType.career_page.value for source in state.sources)
+        employment_source = any(source.source_type in EMPLOYMENT_SOURCE_TYPES for source in state.sources)
+        linkedin_source = any("linkedin.com" in source.domain.lower() for source in state.sources)
+        review_source = any(
+            source.source_type == SourceType.salary_review_platform.value for source in state.sources
         )
+        argentina_job_board_source = any(
+            source.source_type == SourceType.job_board.value
+            and any(domain in source.domain.lower() for domain in ARGENTINA_JOB_BOARD_DOMAINS)
+            for source in state.sources
+        )
+        covered_topics = {
+            topic
+            for topic in FULL_REPORT_CORE_TOPICS
+            if topic != EvidenceTopic.open_roles.value
+            and any(
+                evidence.topic == topic
+                and evidence.confidence != ConfidenceLevel.low.value
+                and (source := sources.get(evidence.source_id)) is not None
+                and source.source_type in CORPORATE_SOURCE_TYPES
+                for evidence in state.evidence
+            )
+        }
+        open_roles_verified = any(
+            evidence.topic == EvidenceTopic.open_roles.value
+            and evidence.confidence != ConfidenceLevel.low.value
+            and (source := sources.get(evidence.source_id)) is not None
+            and AgentOrchestrator.is_specific_argentina_job(
+                source,
+                evidence.excerpt,
+                state.company_name or "",
+            )
+            for evidence in state.evidence
+        )
+        if open_roles_verified:
+            covered_topics.add(EvidenceTopic.open_roles.value)
+        attempts = list(
+            dict.fromkeys(
+                [
+                    *state.employment_search_attempts,
+                    *(
+                        family
+                        for query in state.searched_queries
+                        if (family := AgentOrchestrator.employment_search_family(query))
+                    ),
+                ]
+            )
+        )
+        employment_search_exhausted = all(
+            family in attempts for family in EMPLOYMENT_SEARCH_SEQUENCE
+        )
+        open_roles_status = (
+            "verified"
+            if open_roles_verified
+            else "searched_not_verified"
+            if employment_search_exhausted
+            else "search_pending"
+        )
+        missing = []
+        if not corporate_source:
+            missing.append("una fuente oficial o de carreras de la empresa")
+        if not employment_source and not employment_search_exhausted:
+            missing.append("una fuente laboral actual para las vacantes")
+        if EvidenceTopic.business.value not in covered_topics:
+            missing.append("el negocio principal")
+        if EvidenceTopic.argentina_presence.value not in covered_topics:
+            missing.append("la presencia de la empresa en Argentina")
+        if open_roles_status == "search_pending":
+            missing.append("vacantes actuales en Argentina")
+        company_name = state.company_name or "la empresa"
+        recommended_queries: list[dict[str, str]] = []
+        recommended_inspections: list[dict[str, str]] = []
+        if not corporate_source:
+            recommended_queries.extend(
+                [
+                    {
+                        "topic": EvidenceTopic.business.value,
+                        "query": f"{company_name} sitio oficial Argentina",
+                        "reason": "Falta una fuente corporativa.",
+                    },
+                    {
+                        "topic": EvidenceTopic.open_roles.value,
+                        "query": f"{company_name} careers jobs Argentina",
+                        "reason": "Falta una página de carreras de la empresa.",
+                    },
+                ]
+            )
+        elif EvidenceTopic.business.value not in covered_topics:
+            recommended_queries.append(
+                {
+                    "topic": EvidenceTopic.business.value,
+                    "query": f"{company_name} sitio oficial servicios productos what we do",
+                    "reason": "Falta evidencia corporativa sobre el negocio.",
+                }
+            )
+        if EvidenceTopic.argentina_presence.value not in covered_topics:
+            recommended_queries.append(
+                {
+                    "topic": EvidenceTopic.argentina_presence.value,
+                    "query": f"{company_name} sitio oficial Argentina oficinas presencia",
+                    "reason": "Falta evidencia corporativa sobre la presencia en Argentina.",
+                }
+            )
+        if open_roles_status == "search_pending":
+            next_family = next(
+                family for family in EMPLOYMENT_SEARCH_SEQUENCE if family not in attempts
+            )
+            recommended_queries.append(
+                {
+                    "topic": EvidenceTopic.open_roles.value,
+                    "source_family": next_family,
+                    "query": EMPLOYMENT_SEARCH_QUERIES[next_family].format(company=company_name),
+                    "reason": "Falta una vacante concreta y localizada en Argentina.",
+                }
+            )
+        elif not review_source:
+            recommended_queries.append(
+                {
+                    "topic": EvidenceTopic.culture.value,
+                    "query": f"site:glassdoor.com {company_name} Argentina reviews entrevistas",
+                    "reason": "Fuente opcional para cultura y entrevistas.",
+                }
+            )
+        missing_topics = set(FULL_REPORT_CORE_TOPICS) - covered_topics
+        for source in state.sources:
+            if source.id in state.inspected_source_ids:
+                continue
+            useful_for = []
+            if source.source_type in CORPORATE_SOURCE_TYPES:
+                useful_for.extend(
+                    topic
+                    for topic in (
+                        EvidenceTopic.business.value,
+                        EvidenceTopic.argentina_presence.value,
+                    )
+                    if topic in missing_topics
+                )
+            if (
+                open_roles_status == "search_pending"
+                and source.source_type in EMPLOYMENT_SOURCE_TYPES
+                and AgentOrchestrator.is_specific_argentina_job(
+                    source,
+                    "",
+                    state.company_name or "",
+                )
+            ):
+                useful_for.append(EvidenceTopic.open_roles.value)
+            if useful_for:
+                recommended_inspections.append(
+                    {
+                        "source_id": source.id,
+                        "title": source.title,
+                        "topics": ", ".join(dict.fromkeys(useful_for)),
+                    }
+                )
+        return {
+            "corporate_source": corporate_source,
+            "career_source": career_source,
+            "employment_source": employment_source,
+            "linkedin_source": linkedin_source,
+            "review_source": review_source,
+            "argentina_job_board_source": argentina_job_board_source,
+            "core_topics": {topic: topic in covered_topics for topic in FULL_REPORT_CORE_TOPICS},
+            "open_roles_status": open_roles_status,
+            "employment_search_attempts": attempts,
+            "employment_search_exhausted": employment_search_exhausted,
+            "missing": missing,
+            "recommended_queries": recommended_queries,
+            "recommended_inspections": recommended_inspections,
+            "ready": not missing,
+        }
+
+    @staticmethod
+    def employment_search_family(query: str) -> str | None:
+        normalized = query.casefold()
+        if "linkedin.com/jobs" in normalized or (
+            "linkedin" in normalized
+            and any(term in normalized for term in ("job", "empleo", "vacante"))
+        ):
+            return "linkedin"
+        if "computrabajo" in normalized:
+            return "computrabajo"
+        if "bumeran" in normalized:
+            return "bumeran"
+        if "zonajobs" in normalized:
+            return "zonajobs"
+        if "career" in normalized:
+            return "careers"
+        return None
+
+    @staticmethod
+    def required_full_report_action(state: AgentState) -> dict[str, Any] | None:
+        coverage = AgentOrchestrator.full_report_coverage(state)
+        if not state.company_name or coverage["ready"]:
+            return None
+        if coverage["recommended_inspections"]:
+            source_id = coverage["recommended_inspections"][0]["source_id"]
+            return {
+                "name": "inspect_page",
+                "arguments": {"source_id": source_id},
+                "instruction": (
+                    "La cobertura corporativa central ya está completa. Inspeccioná ahora "
+                    f"la fuente laboral recomendada con source_id {source_id}."
+                ),
+            }
+        query_priority = {
+            EvidenceTopic.business.value: 0,
+            EvidenceTopic.argentina_presence.value: 1,
+            EvidenceTopic.open_roles.value: 2,
+        }
+        recommendation = min(
+            coverage["recommended_queries"],
+            key=lambda item: query_priority.get(item.get("topic", ""), 99),
+        )
+        return {
+            "name": "search_web",
+            "arguments": {
+                "query": recommendation["query"],
+                "company_name": state.company_name,
+                "topic": EvidenceTopic.open_roles.value,
+                "limit": 5,
+            },
+            "instruction": (
+                "La cobertura corporativa central ya está completa. Ejecutá ahora exactamente "
+                f"la búsqueda laboral pendiente: {recommendation['query']}"
+            ),
+        }
+
+    @staticmethod
+    def is_specific_argentina_job(
+        source: AgentSource,
+        evidence_text: str,
+        company_name: str,
+    ) -> bool:
+        if source.source_type not in EMPLOYMENT_SOURCE_TYPES or not company_name:
+            return False
+        context = f"{source.title} {source.snippet} {evidence_text} {source.url}".casefold()
+        collapsed = re.sub(r"[^a-z0-9áéíóúüñ]+", "", context)
+        company_matches = any(
+            token in collapsed for token in company_domain_tokens(company_name)
+        )
+        domain = source.domain.casefold()
+        path = urlparse(source.url).path.rstrip("/").casefold()
+        if "linkedin.com" in domain:
+            is_job_detail = bool(re.search(r"/jobs/view/[^/]+$", path))
+        else:
+            is_job_detail = bool(
+                path not in {"/careers", "/jobs", "/empleos", "/vacantes"}
+                and JOB_DETAIL_URL_RE.search(path)
+            )
+        return bool(
+            company_matches
+            and ARGENTINA_LOCATION_RE.search(context)
+            and is_job_detail
+            and not GENERIC_JOB_PAGE_RE.fullmatch(source.title.strip())
+        )
+
+    def set_company_context(self, task: models.TaskRun, state: AgentState, company_name: str) -> None:
+        company_name = company_name.strip()
+        if not company_name:
+            if self.is_full_report_task(task):
+                raise ValueError("search_web requiere company_name para un informe completo.")
+            return
+        if state.company_name and not self.same_company(state.company_name, company_name):
+            raise ValueError("La empresa no puede cambiar durante la misma investigación.")
+        is_new_company = not state.company_name
+        state.company_name = state.company_name or company_name
+        conversation = self.repo.get(task.conversation_id)
+        if conversation:
+            context = safe_json_dict(conversation.active_context_json)
+            context["active_company_name"] = state.company_name
+            self.repo.update_active_context(conversation, context)
+        if not is_new_company:
+            return
+        for source in state.sources:
+            scored = score_search_result(
+                company_name,
+                SearchResult(
+                    title=source.title,
+                    url=source.url,
+                    snippet=source.snippet,
+                    rank=source.rank,
+                    query_topic=EvidenceTopic(source.topic),
+                ),
+            )
+            source.source_type = scored.source_type.value
+            source.reliability_score = scored.reliability_score
+
+    @staticmethod
+    def same_company(first: str, second: str) -> bool:
+        first_tokens = set(company_domain_tokens(first))
+        second_tokens = set(company_domain_tokens(second))
+        return (
+            bool(first_tokens & second_tokens)
+            or normalize_company_name(first) == normalize_company_name(second)
+        )
+
+    @classmethod
+    def can_create_report(cls, state: AgentState) -> bool:
+        return bool(cls.full_report_coverage(state)["ready"])
+
+    def force_completion(self, task: models.TaskRun, state: AgentState) -> None:
+        if self.is_full_report_task(task) and self.can_create_report(state):
+            state.force_report_finalize = True
+        else:
+            state.force_finalize = True
+        self.save_state(task, state)
+        self.db.commit()
 
     def build_context(self, task: models.TaskRun, state: AgentState) -> str:
         conversation = self.repo.get(task.conversation_id)
@@ -627,15 +1198,33 @@ class AgentOrchestrator:
                 usage[timing_key] = int(usage.get(timing_key) or 0) + elapsed
 
     def tool_respond(self, task, state, usage, arguments) -> ToolResult:
-        if state.force_finalize and state.requires_grounding and not state.evidence:
+        if state.force_finalize and state.requires_grounding and (
+            not state.evidence or self.is_full_report_task(task)
+        ):
+            missing = self.full_report_coverage(state)["missing"] if self.is_full_report_task(task) else []
             arguments = AgentAnswer(
                 answer=(
-                    "No pude verificar la información solicitada porque la investigación "
-                    "terminó antes de inspeccionar y validar las fuentes encontradas."
+                    "No pude verificar evidencia suficiente para generar un informe completo. "
+                    + (
+                        "Faltó cubrir: " + ", ".join(missing) + ". "
+                        if missing
+                        else ""
+                    )
+                    + "Podés indicar una fuente, el país, el rol o un foco más específico para intentarlo de nuevo."
                 ),
                 answer_type="grounded",
+                claims=(
+                    [
+                        GroundedClaim(
+                            text="La evidencia disponible no cubre todos los requisitos del informe.",
+                            evidence_ids=[item.id for item in state.evidence[:3]],
+                        )
+                    ]
+                    if state.evidence
+                    else []
+                ),
                 warnings=[
-                    "Hay fuentes potenciales, pero no se validó evidencia suficiente para responder."
+                    "Hay fuentes potenciales, pero no se validó evidencia suficiente para completar el informe."
                 ],
             ).model_dump(mode="json")
         elif not str(arguments.get("answer") or "").strip():
@@ -646,6 +1235,10 @@ class AgentOrchestrator:
                 str(arguments.get("answer_type") or ("grounded" if state.requires_grounding else "guidance")),
             ).model_dump(mode="json")
         answer = AgentAnswer.model_validate(arguments)
+        if FUTURE_RESEARCH_RE.search(answer.answer):
+            raise ValueError(
+                "respond es terminal: ejecutá una herramienta de investigación o entregá la respuesta final."
+            )
         usage["response_kind"] = (
             "artifact"
             if state.generated_report_id
@@ -668,9 +1261,10 @@ class AgentOrchestrator:
                 raise ValueError("La respuesta grounded requiere afirmaciones con evidencia.")
         if CURRENT_OPPORTUNITY_RE.search(state.goal):
             cited_source_ids = {evidence_by_id[evidence_id].source_id for evidence_id in cited_ids}
-            has_official_source = any(
+            has_employment_source = any(
                 source.id in cited_source_ids
-                and source.source_type in {SourceType.official.value, SourceType.career_page.value}
+                and source.source_type
+                in {SourceType.official.value, SourceType.career_page.value, SourceType.job_board.value}
                 for source in state.sources
             )
             caveat = re.search(
@@ -678,14 +1272,15 @@ class AgentOrchestrator:
                 answer.answer,
                 re.IGNORECASE,
             )
-            if not has_official_source:
+            if not has_employment_source:
                 if not caveat:
                     answer.answer = (
-                        "No pude confirmar esta información en una fuente oficial de empleos. "
+                        "No pude confirmar esta información en una fuente laboral confiable. "
                         + answer.answer
                     )
                 if not answer.warnings:
                     answer.warnings.append("La oportunidad solo cuenta con evidencia secundaria.")
+        answer.answer = clean_generated_answer(answer.answer)
         citations = self.build_citations(state, cited_ids)
         conversation = self.repo.get(task.conversation_id)
         if not conversation:
@@ -719,6 +1314,15 @@ class AgentOrchestrator:
         self.repo.add_event(task, "task.completed", {"task_run_id": task.id, "status": "completed"})
         self.db.commit()
         self.summarize_if_needed(conversation, usage)
+        raise AgentCompleted
+
+    def complete_task(self, task: models.TaskRun, usage: dict) -> None:
+        self.repo.update_task(task, "completed")
+        self.repo.add_event(task, "task.completed", {"task_run_id": task.id, "status": "completed"})
+        self.db.commit()
+        conversation = self.repo.get(task.conversation_id)
+        if conversation:
+            self.summarize_if_needed(conversation, usage)
         raise AgentCompleted
 
     def generate_final_answer(
@@ -756,6 +1360,7 @@ class AgentOrchestrator:
             for item in options[:4]
             if isinstance(item, dict) and item.get("id") and item.get("label")
         ]
+        state.pending_clarification = {"question": question, "options": options}
         conversation = self.repo.get(task.conversation_id)
         if conversation:
             self.repo.add_message(conversation, role="assistant", content=question, status="completed")
@@ -961,6 +1566,7 @@ class AgentOrchestrator:
             artifact_type="cv_recommendation",
             artifact_id=artifact.id,
             relationship_type="generated",
+            message_id=task.trigger_message_id,
         )
         state.recommendation_artifact_id = artifact.id
         self.save_state(task, state)
@@ -987,19 +1593,39 @@ class AgentOrchestrator:
         query = str(arguments.get("query") or "").strip()
         if not query:
             raise ValueError("La búsqueda requiere una consulta.")
+        self.set_company_context(task, state, str(arguments.get("company_name") or ""))
         topic = EvidenceTopic(str(arguments.get("topic") or EvidenceTopic.general.value))
         limit = min(5, max(1, int(arguments.get("limit") or 3)))
-        self.enforce_tool_budget(task, state, usage, "searches")
+        if not self.enforce_tool_budget(task, state, usage, "searches"):
+            return ToolResult(
+                {"ok": False, "summary": "Se alcanzó el límite de búsquedas; finalizando con lo disponible."},
+                [],
+            )
         usage["searches"] += 1
         normalized = " ".join(query.lower().split())
         if normalized in state.searched_queries:
             return ToolResult({"ok": True, "summary": "La consulta ya había sido ejecutada.", "sources": []}, [])
         state.searched_queries.append(normalized)
         results = self.get_search_provider().search(query, limit)
+        if topic == EvidenceTopic.open_roles:
+            family = self.employment_search_family(query)
+            if family and family not in state.employment_search_attempts:
+                state.employment_search_attempts.append(family)
         existing = {item.id for item in state.sources}
         added = []
+        filtered_by_location = 0
+        targets_argentina = "argentina" in f"{state.goal} {state.company_name or ''}".lower()
         for result in results:
             if urlparse(result.url).scheme not in {"http", "https"}:
+                continue
+            result_context = f"{result.title} {result.snippet}"
+            if (
+                targets_argentina
+                and topic.value in LOCATION_SENSITIVE_TOPICS
+                and FOREIGN_LOCATION_RE.search(result_context)
+                and "argentina" not in result_context.lower()
+            ):
+                filtered_by_location += 1
                 continue
             normalized_result = SearchResult(
                 title=result.title,
@@ -1008,7 +1634,7 @@ class AgentOrchestrator:
                 rank=result.rank,
                 query_topic=topic,
             )
-            scored = score_search_result("", normalized_result)
+            scored = score_search_result(state.company_name or "", normalized_result)
             if scored.source_id in existing:
                 continue
             source = AgentSource(
@@ -1026,37 +1652,44 @@ class AgentOrchestrator:
             state.sources.append(source)
             existing.add(source.id)
             added.append(source)
-        return ToolResult(
-            {
-                "ok": True,
-                "summary": f"Se encontraron {len(added)} fuentes nuevas.",
-                "sources": [item.model_dump(mode="json") for item in added],
-            },
-            [],
-        )
+        payload = {
+            "ok": True,
+            "summary": f"Se encontraron {len(added)} fuentes nuevas.",
+            "sources": [item.model_dump(mode="json") for item in added],
+            "filtered_by_location": filtered_by_location,
+        }
+        if self.is_full_report_task(task):
+            payload["report_coverage"] = self.full_report_coverage(state)
+        return ToolResult(payload, [])
 
     def tool_inspect_page(self, task, state, usage, arguments) -> ToolResult:
         source_id = str(arguments.get("source_id") or "")
         source = next((item for item in state.sources if item.id == source_id), None)
         if not source:
             raise ValueError("Solo se pueden inspeccionar fuentes devueltas por search_web.")
-        self.enforce_tool_budget(task, state, usage, "inspections")
+        if not self.enforce_tool_budget(task, state, usage, "inspections"):
+            return ToolResult(
+                {"ok": False, "summary": "Se alcanzó el límite de inspecciones; finalizando con lo disponible."},
+                [],
+            )
         usage["inspections"] += 1
         if source_id in state.inspected_source_ids:
             return ToolResult({"ok": True, "summary": "La fuente ya había sido inspeccionada."}, [])
         content = self.get_extractor().extract(source.url)
         if content is None:
-            source.inspected = True
-            state.inspected_source_ids.append(source.id)
-            return ToolResult(
-                {
-                    "ok": False,
-                    "summary": "No se pudo extraer contenido util de la fuente.",
-                    "source_id": source.id,
-                    "source_type": source.source_type,
-                },
-                [],
-            )
+            if not source.snippet.strip():
+                source.inspected = True
+                state.inspected_source_ids.append(source.id)
+                return ToolResult(
+                    {
+                        "ok": False,
+                        "summary": "No se pudo extraer contenido util de la fuente.",
+                        "source_id": source.id,
+                        "source_type": source.source_type,
+                    },
+                    [],
+                )
+            content = ExtractedContent(url=source.url, title=source.title, text=source.snippet)
         scored = ScoredSource(
             source_id=source.id,
             title=source.title,
@@ -1074,27 +1707,38 @@ class AgentOrchestrator:
             evidence_id = evidence_identifier(source.id, item.topic.value, item.raw_text_excerpt)
             if evidence_id in known:
                 continue
+            confidence = item.confidence
+            if (
+                item.topic == EvidenceTopic.open_roles
+                and confidence == ConfidenceLevel.low
+                and self.is_specific_argentina_job(
+                    source,
+                    item.raw_text_excerpt,
+                    state.company_name or "",
+                )
+            ):
+                confidence = ConfidenceLevel.medium
             evidence = AgentEvidence(
                 id=evidence_id,
                 source_id=source.id,
                 topic=item.topic.value,
                 claim=item.claim,
                 excerpt=item.raw_text_excerpt[:1200],
-                confidence=item.confidence.value,
+                confidence=confidence.value,
             )
             state.evidence.append(evidence)
             known.add(evidence.id)
             added.append(evidence)
         source.inspected = True
         state.inspected_source_ids.append(source.id)
-        return ToolResult(
-            {
-                "ok": True,
-                "summary": f"La fuente aportó {len(added)} evidencias.",
-                "evidence": [item.model_dump(mode="json") for item in added],
-            },
-            [],
-        )
+        payload = {
+            "ok": True,
+            "summary": f"La fuente aportó {len(added)} evidencias.",
+            "evidence": [item.model_dump(mode="json") for item in added],
+        }
+        if self.is_full_report_task(task):
+            payload["report_coverage"] = self.full_report_coverage(state)
+        return ToolResult(payload, [])
 
     def tool_review_evidence(self, task, state, usage, arguments) -> ToolResult:
         coverage = {topic.value: 0 for topic in EvidenceTopic}
@@ -1102,12 +1746,14 @@ class AgentOrchestrator:
             coverage[item.topic] = coverage.get(item.topic, 0) + 1
         missing = [topic for topic, count in coverage.items() if count == 0]
         state.unresolved_topics = missing
+        report_coverage = self.full_report_coverage(state) if self.is_full_report_task(task) else None
         return ToolResult(
             {
                 "ok": True,
                 "summary": f"Hay evidencia en {sum(1 for count in coverage.values() if count)} temas.",
                 "coverage": coverage,
                 "missing_topics": missing,
+                "report_coverage": report_coverage,
             },
             [],
         )
@@ -1251,6 +1897,7 @@ class AgentOrchestrator:
             artifact_type="comparison",
             artifact_id=comparison.id,
             relationship_type="generated",
+            message_id=task.trigger_message_id,
         )
         state.generated_comparison_id = comparison.id
         self.update_active_context(conversation, report_ids=report_ids)
@@ -1281,6 +1928,15 @@ class AgentOrchestrator:
         company_name = str(arguments.get("company_name") or "").strip()
         if not company_name or not state.sources or not state.evidence:
             raise ValueError("Para crear un informe se requiere empresa, fuentes y evidencia.")
+        self.set_company_context(task, state, company_name)
+        coverage = self.full_report_coverage(state) if self.is_full_report_task(task) else None
+        if coverage and not coverage["ready"]:
+            raise ValueError(
+                "Todavía falta evidencia central o completar las búsquedas laborales requeridas."
+            )
+        allow_unverified_open_roles = bool(
+            coverage and coverage["open_roles_status"] == "searched_not_verified"
+        )
         conversation = self.repo.get(task.conversation_id)
         if not conversation:
             raise AgentFailure("La conversación ya no existe.")
@@ -1310,7 +1966,63 @@ class AgentOrchestrator:
                 )
             )
             self.add_provider_usage(usage, getattr(self.get_client(), "last_usage", {}))
+            if allow_unverified_open_roles:
+                self.apply_open_roles_limitation(structured)
+            completion_issues = report_completion_issues(
+                structured,
+                allow_unverified_open_roles=allow_unverified_open_roles,
+            )
+            if completion_issues:
+                self.report_repo.update_status(
+                    report,
+                    ReportStatus.failed,
+                    " ".join(completion_issues)[:500],
+                )
+                self.db.commit()
+                self.tool_respond(
+                    task,
+                    state,
+                    usage,
+                    {
+                        "answer": (
+                            f"No pude verificar evidencia suficiente para generar un informe completo sobre "
+                            f"{company.name}. "
+                            + " ".join(completion_issues)
+                            + " Puedo investigar una parte puntual si indicás qué información priorizar."
+                        ),
+                        "answer_type": "grounded",
+                        "claims": [],
+                        "warnings": completion_issues,
+                    },
+            )
             self.report_repo.save_structured_report(report, structured)
+        except AgentCompleted:
+            raise
+        except SynthesisError as exc:
+            if "did not match report schema after repair" not in str(exc):
+                raise
+            self.db.rollback()
+            report = self.report_repo.get_by_id(report.id)
+            if report:
+                self.report_repo.update_status(report, ReportStatus.failed, str(exc)[:500])
+                self.db.commit()
+            self.tool_respond(
+                task,
+                state,
+                usage,
+                {
+                    "answer": (
+                        "No pude verificar citas exactas suficientes para generar el informe completo. "
+                        "Las afirmaciones centrales siguieron sin respaldo después del intento de reparación. "
+                        "La evidencia no se publicó como informe para evitar afirmaciones sin respaldo."
+                    ),
+                    "answer_type": "grounded",
+                    "claims": [],
+                    "warnings": [
+                        "La síntesis no superó la validación de citas centrales."
+                    ],
+                },
+            )
         except Exception as exc:
             self.db.rollback()
             report = self.report_repo.get_by_id(report.id)
@@ -1323,6 +2035,7 @@ class AgentOrchestrator:
             artifact_type="report",
             artifact_id=report.id,
             relationship_type="generated",
+            message_id=task.trigger_message_id,
         )
         state.generated_report_id = report.id
         self.update_active_context(conversation, report_ids=[report.id], company_ids=[company.id])
@@ -1341,6 +2054,43 @@ class AgentOrchestrator:
         return ToolResult(
             {"ok": True, "summary": "El informe grounded quedó guardado.", "report_id": report.id},
             refs,
+        )
+
+    @staticmethod
+    def apply_open_roles_limitation(report) -> None:
+        section = next(
+            (item for item in report.sections if item.type == SectionType.open_roles),
+            None,
+        )
+        if section is None:
+            section = SectionSchema(
+                type=SectionType.open_roles,
+                title="Vacantes actuales en Argentina",
+                summary=OPEN_ROLES_LIMITATION,
+                claims=[],
+                confidence=ConfidenceLevel.low,
+                missing_evidence=True,
+            )
+            report.sections.append(section)
+        else:
+            section.title = "Vacantes actuales en Argentina"
+            section.summary = OPEN_ROLES_LIMITATION
+            section.claims = []
+            section.confidence = ConfidenceLevel.low
+            section.missing_evidence = True
+        report.warnings = [
+            warning
+            for warning in report.warnings
+            if warning.related_section != SectionType.open_roles
+        ]
+        report.warnings.append(
+            WarningSchema(
+                id="open_roles_not_verified",
+                type="open_roles_not_verified",
+                message=OPEN_ROLES_LIMITATION,
+                severity=WarningSeverity.medium,
+                related_section=SectionType.open_roles,
+            )
         )
 
     def import_report_evidence(self, state: AgentState, report: models.Report) -> None:
@@ -1568,7 +2318,7 @@ class AgentOrchestrator:
     @staticmethod
     def safe_arguments(name: str, arguments: dict) -> dict:
         allowed = {
-            "search_web": {"query", "topic", "limit"},
+            "search_web": {"query", "company_name", "topic", "limit"},
             "inspect_page": {"source_id"},
             "retrieve_reports": {"company_name", "query", "limit", "report_ids"},
             "compare_reports": {"report_ids", "dimensions"},
@@ -1590,18 +2340,39 @@ class AgentOrchestrator:
     @staticmethod
     def function_tools(
         final_only: bool = False,
+        report_final_only: bool = False,
         clarification_only: bool = False,
         allow_clarification: bool = True,
+        allow_research: bool = True,
+        report_needs_artifact: bool = False,
     ) -> list[dict[str, Any]]:
         names = (
-            ["respond"]
+            ["finish_research"]
+            if report_final_only
+            else ["respond"]
             if final_only
             else ["request_clarification"]
             if clarification_only
             else list(FUNCTION_SCHEMAS)
         )
+        if report_needs_artifact:
+            names = [name for name in names if name != "respond"]
         if not allow_clarification:
             names = [name for name in names if name != "request_clarification"]
+        if not allow_research:
+            names = [
+                name
+                for name in names
+                if name
+                not in {
+                    "search_web",
+                    "inspect_page",
+                    "review_evidence",
+                    "retrieve_reports",
+                    "compare_reports",
+                    "finish_research",
+                }
+            ]
         return [
             {
                 "type": "function",
@@ -1661,11 +2432,15 @@ FUNCTION_SCHEMAS = {
         },
     },
     "search_web": {
-        "description": "Busca fuentes públicas con Tavily.",
+        "description": "Busca fuentes públicas con Tavily. Para empleo en Argentina, incluí LinkedIn, Glassdoor, Computrabajo, Bumeran, ZonaJobs, Indeed, Get on Board o Portal Empleo cuando correspondan al tema.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
+                "company_name": {
+                    "type": "string",
+                    "description": "Empresa estable investigada; obligatoria para informes completos.",
+                },
                 "topic": {"type": "string", "enum": [item.value for item in EvidenceTopic]},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 5},
             },
@@ -1744,7 +2519,7 @@ FUNCTION_SCHEMAS = {
                 "stopping_reason": {"type": "string"},
                 "unresolved_topics": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["output_type", "stopping_reason"],
+            "required": ["company_name", "output_type", "stopping_reason"],
         },
     },
 }
@@ -1760,6 +2535,25 @@ def elapsed_datetime_ms(started) -> int:
 def evidence_identifier(source_id: str, topic: str, excerpt: str) -> str:
     digest = hashlib.sha256(f"{source_id}|{topic}|{excerpt}".encode("utf-8")).hexdigest()[:16]
     return f"evidence_{digest}"
+
+
+def clean_generated_answer(value: str) -> str:
+    cleaned_lines: list[str] = []
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if re.fullmatch(r"(?:[-*_]\s*){3,}", line):
+            continue
+        if re.fullmatch(r"\|?(?:\s*:?-{3,}:?\s*\|)+\s*", line):
+            continue
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^>\s?", "", line)
+        line = re.sub(r"^[-*+]\s+", "", line)
+        line = line.replace("**", "").replace("__", "").replace("`", "")
+        if line.startswith("|") and line.endswith("|"):
+            cells = [cell.strip() for cell in line.strip("|").split("|") if cell.strip()]
+            line = f"{cells[0]}: {', '.join(cells[1:])}" if len(cells) > 1 else "".join(cells)
+        cleaned_lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned_lines)).strip()
 
 
 def text_chunks(value: str, size: int) -> list[str]:

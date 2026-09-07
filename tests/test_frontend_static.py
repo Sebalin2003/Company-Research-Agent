@@ -12,8 +12,8 @@ def test_conversational_frontend_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Radar Laboral" in response.text
-    assert "/static/app.js?v=48" in response.text
-    assert "/static/styles.css?v=28" in response.text
+    assert "/static/app.js?v=50" in response.text
+    assert "/static/styles.css?v=29" in response.text
     assert "viewport-fit=cover" in response.text
 
     # Two-region conversational shell and accessible landmarks.
@@ -106,6 +106,7 @@ def test_conversational_frontend_assets_are_served() -> None:
     assert ".conversation-transcript::-webkit-scrollbar" in css
     assert "scrollbar-width: thin" in css
     assert ".chat-composer textarea:focus-visible" in css
+    assert ".conversation-search input:focus-visible" in css
 
     # Sidebar rows are uncluttered and CV versions keep only useful actions.
     assert "conversation-origin" not in js
@@ -130,6 +131,7 @@ def test_conversational_frontend_assets_are_served() -> None:
     assert 'document.querySelector("dialog[open]")' in js
     assert "resumeTask" in js
     assert "renderPauseRequest" in js
+    assert "renderGeneratedArtifacts(conversation, message.message_id)" in js
     assert "renderComparisonArtifact" in js
     assert "retryFailedTask" in js
     assert "retryTask(taskId)" in js
@@ -137,7 +139,8 @@ def test_conversational_frontend_assets_are_served() -> None:
     assert "syncRetryCountdown" in js
     assert "data-retry-at" in js
     assert "clarification.required" in js
-    assert "approval.required" in js
+    assert "approval.required" not in js
+    assert "awaiting_approval" not in js
     assert "artifact.created" in js
     assert "await refreshActiveConversation();" in js
     assert "Last-Event-ID" not in js

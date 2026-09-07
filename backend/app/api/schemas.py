@@ -431,8 +431,7 @@ class TaskCancelResponse(BaseModel):
 
 
 class TaskResumeRequest(BaseModel):
-    response_type: Literal["clarification", "approval", "review"]
-    decision: Literal["approved", "rejected"] | None = None
+    response_type: Literal["clarification", "review"]
     content: str | None = Field(default=None, max_length=20_000)
     selected_option_ids: list[str] = Field(default_factory=list, max_length=10)
     artifact_id: str | None = None
@@ -442,8 +441,6 @@ class TaskResumeRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_response(self):
-        if self.response_type == "approval" and self.decision is None:
-            raise ValueError("La aprobación requiere una decisión.")
         if self.response_type == "clarification":
             content = (self.content or "").strip()
             if not content and not self.selected_option_ids:

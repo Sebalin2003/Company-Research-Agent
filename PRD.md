@@ -11,7 +11,7 @@ The assistant is not limited to generating company reports. For every user messa
 - ask for clarification;
 - call one or more controlled tools;
 - start or continue a longer-running task;
-- request approval or review when human involvement is required.
+- request clarification or review when human involvement is required.
 
 The product combines model-directed research with deterministic evidence safeguards. DeepSeek controls the research strategy and chooses when to use tools, while backend code controls tool execution, source scoring, evidence identifiers, budgets, persistence, citation validation, CV truthfulness, and final report validation.
 
@@ -32,7 +32,7 @@ Radar Laboral should let the user:
 - understand what the agent is doing during longer tasks;
 - distinguish sourced facts, inferences, recommendations, uncertainty, and missing evidence.
 
-Success means the chatbot chooses appropriate actions, preserves conversational context, produces auditable outputs, and clearly involves the user when a decision or approval is necessary.
+Success means the chatbot chooses appropriate actions, preserves conversational context, produces auditable outputs, and clearly involves the user when clarification or review is necessary.
 
 ## 3. Target User and Operating Context
 
@@ -57,7 +57,7 @@ Operating assumptions:
 
 ### 4.1 Conversation First
 
-The conversation is the primary interface. Reports, comparisons, CV recommendations, warnings, approvals, and research progress appear as messages or inline artifacts in the transcript.
+The conversation is the primary interface. Reports, comparisons, CV recommendations, warnings, and research progress appear as messages or inline artifacts in the transcript.
 
 ### 4.2 Evidence Before Advice
 
@@ -69,7 +69,7 @@ DeepSeek may decide what to search, which source to inspect, which evidence gap 
 
 ### 4.4 Human Control at Consequential Moments
 
-Routine public research should not require confirmation. The system should pause for clarification, approval, or review only when the user's decision materially changes the result or authorizes a consequential action.
+Routine public research should not require confirmation. The system pauses only for clarification or CV review when the user's input is necessary.
 
 ### 4.5 CV Truthfulness and Reversibility
 
@@ -118,19 +118,12 @@ DeepSeek may start a bounded task when the request requires:
 
 The central conversation must show incremental progress while the task runs.
 
-### 5.4 Human Approval and Review
+### 5.4 Human Clarification and Review
 
 Human involvement has three distinct forms:
 
 1. `needs_clarification`: required information or intent is ambiguous.
-2. `awaiting_approval`: the agent understands the action but needs permission.
-3. `awaiting_review`: the agent has produced a draft that the user should verify.
-
-Approval is required before:
-
-- extending an exhausted standard research budget;
-- deleting conversations, reports, stored CVs, or CV versions when deletion is initiated by the agent;
-- any future external communication, publication, submission, or paid action.
+2. `awaiting_review`: the agent has produced a draft that the user should verify.
 
 Review is required for:
 
@@ -139,7 +132,7 @@ Review is required for:
 - additions marked `add_only_if_true`;
 - personalized career statements that require the user to confirm accuracy.
 
-Authentication-free local UI actions explicitly initiated by the user, such as pressing a visible delete button and confirming the dialog, do not need a separate agent approval turn.
+Authentication-free local UI actions explicitly initiated by the user, such as pressing a visible delete button and confirming the dialog, do not need a separate agent turn.
 
 ## 6. Agent Architecture
 
@@ -173,7 +166,7 @@ flowchart TD
     C -->|"Research is sufficient"| H["Generate typed artifact"]
     H --> I["Deterministic validation"]
     I --> J["Persist artifact and stream completion"]
-    C -->|"Budget is exhausted"| K["Request approval to continue"]
+    C -->|"Budget is exhausted"| K["Finalize with evidence or a transparent limitation"]
 ```
 
 For each loop iteration, the backend must:
@@ -258,7 +251,7 @@ Agent budgets are configurable and enforced server-side. They cover:
 - provider timeouts;
 - extracted content size.
 
-DeepSeek cannot increase its own budget. When the standard budget is exhausted and meaningful gaps remain, the task changes to `awaiting_approval` and offers one explicit option to continue with an extended budget. Repeated searches or inspections that produce no new evidence count toward the stopping decision.
+DeepSeek cannot increase its own budget. Normal requests use fixed limits of 12 model decisions, 6 web searches, 10 inspections, and 180 seconds. Explicit company reports use 16 decisions, 12 searches, 20 inspections, and 300 seconds, with the final decision reserved for `finish_research` when validated evidence exists. At a limit, the task completes with a grounded result when evidence is sufficient, or a transparent Spanish explanation of what could not be verified. Repeated searches or inspections that produce no new evidence count toward the stopping decision.
 
 ## 7. Memory Model
 
@@ -285,7 +278,7 @@ Each conversation stores explicit references to:
 - selected CV ID;
 - selected job-description artifact;
 - active task run;
-- pending clarification, approval, or review.
+- pending clarification or review.
 
 This resolves references such as “that company,” “the previous report,” or “use my CV.”
 
@@ -330,7 +323,7 @@ The system stores a concise event trace containing:
 - tool name and validated arguments;
 - debug-safe result summaries and artifact IDs;
 - timestamps, duration, and budget usage;
-- failures, retries, approvals, and stopping reasons.
+- failures, retries, and stopping reasons.
 
 Execution memory supports observability and replay without storing private chain-of-thought or raw CV text in logs.
 
@@ -490,7 +483,7 @@ The app uses two primary regions:
 - research progress and tool summaries;
 - inline reports and comparisons;
 - source citations and uncertainty warnings;
-- clarification, approval, and review controls;
+- clarification and review controls;
 - sticky multiline composer.
 
 The transcript should use an open, readable layout rather than placing every message inside a heavy card or colored bubble.
@@ -523,7 +516,6 @@ The conversation must render:
 - tool-progress summaries without private reasoning;
 - report and comparison artifacts;
 - clarification prompts;
-- approval prompts with exact proposed action and impact;
 - CV review suggestions with accept, reject, and edit controls;
 - source links, confidence, warnings, and freshness;
 - retry and resume actions after recoverable failures.
@@ -581,7 +573,6 @@ Core event types:
 - `tool.completed`;
 - `artifact.created`;
 - `clarification.required`;
-- `approval.required`;
 - `review.required`;
 - `task.completed`;
 - `task.cancelled`;
@@ -597,7 +588,6 @@ Task runs use:
 - `pending`;
 - `running`;
 - `needs_clarification`;
-- `awaiting_approval`;
 - `awaiting_review`;
 - `completed`;
 - `cancelled`;
@@ -699,15 +689,14 @@ Opens an SSE stream. The client may send `Last-Event-ID` to resume after disconn
 
 #### `POST /api/task-runs/{task_run_id}/resume`
 
-Resumes a paused task with a clarification, approval, rejection, review decision, or budget-extension decision.
+Resumes a paused task with a clarification or review decision.
 
 Request:
 
 ```json
 {
-  "response_type": "approval",
-  "decision": "approved",
-  "content": null,
+  "response_type": "clarification",
+  "content": "Quiero información sobre puestos junior en Argentina.",
   "selected_option_ids": []
 }
 ```
@@ -941,7 +930,6 @@ The system should:
 - target reliable and current sources;
 - use narrow follow-up research for specific questions;
 - preserve a debug-safe task trace;
-- make approval impact explicit;
 - continue providing a limited answer when some topics remain unsupported;
 - keep all user-facing output in Spanish.
 
@@ -956,7 +944,7 @@ Test that DeepSeek-facing orchestration can:
 - select `search_web` for missing current information;
 - inspect a chosen source and perform targeted follow-up research;
 - stop when evidence is sufficient;
-- pause when the budget is exhausted;
+- complete automatically when the budget is exhausted;
 - reject unknown tools and invalid arguments;
 - avoid repeating identical searches indefinitely.
 
@@ -1023,7 +1011,7 @@ Test:
 - conversation sidebar rendering and search;
 - empty, loading, streaming, paused, error, and completed states;
 - inline report and comparison artifacts;
-- clarification, approval, and review controls;
+- clarification and review controls;
 - CV upload from sidebar and composer;
 - keyboard navigation and visible focus;
 - accessible live-region behavior;
@@ -1040,7 +1028,7 @@ Provide mocked end-to-end scenarios for:
 3. follow-up grounded in the generated report;
 4. comparison using one current and one stale report;
 5. clarification and resumed execution;
-6. standard-budget exhaustion and approved extension;
+6. standard-budget exhaustion with a grounded or transparent limited result;
 7. stored-CV selection, job analysis, and reviewed tailoring suggestions;
 8. SSE disconnect and replay;
 9. opening a report created by the legacy interface.
@@ -1115,7 +1103,7 @@ The conversational rebuild is successful when:
 - the default CV can be reused without uploading it for every request;
 - CV recommendations remain truthful and require review;
 - task progress streams through SSE and survives reconnection without duplication;
-- clarification, approval, and review tasks pause and resume correctly;
+- clarification and review tasks pause and resume correctly;
 - existing reports remain accessible and useful;
 - grounding validation rejects unsupported factual output;
 - the interface works on desktop, tablet, and mobile with WCAG AA fundamentals;
